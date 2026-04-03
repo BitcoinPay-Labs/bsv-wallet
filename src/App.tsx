@@ -16,11 +16,6 @@ interface TxHistoryItem {
   height: number
 }
 
-interface BalanceInfo {
-  confirmed: number
-  unconfirmed: number
-}
-
 const WOC_BASE: Record<Network, string> = {
   mainnet: 'https://api.whatsonchain.com/v1/bsv/main',
   testnet: 'https://api.whatsonchain.com/v1/bsv/test',
@@ -31,16 +26,17 @@ const EXPLORER_BASE: Record<Network, string> = {
   testnet: 'https://test.whatsonchain.com/tx',
 }
 
-async function fetchBalance(address: string, network: Network): Promise<BalanceInfo> {
-  const res = await fetch(`${WOC_BASE[network]}/address/${address}/balance`)
-  if (!res.ok) return { confirmed: 0, unconfirmed: 0 }
-  return res.json()
+async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; utxos: UTXO[] }> {
+  const utxos = await fetchUTXOs(address, network)
+  const total = utxos.reduce((sum, u) => sum + u.value, 0)
+  return { total, utxos }
 }
 
 async function fetchUTXOs(address: string, network: Network): Promise<UTXO[]> {
   const res = await fetch(`${WOC_BASE[network]}/address/${address}/unspent`)
-  if (!res.ok) throw new Error('Failed to fetch UTXOs')
-  return res.json()
+  if (!res.ok) return []
+  const data = await res.json()
+  return Array.isArray(data) ? data : []
 }
 
 async function fetchTxHistory(address: string, network: Network): Promise<TxHistoryItem[]> {
@@ -79,7 +75,8 @@ function App() {
   const [wifInput, setWifInput] = useState('')
   const [privateKey, setPrivateKey] = useState<PrivateKey | null>(null)
   const [address, setAddress] = useState('')
-  const [balance, setBalance] = useState<BalanceInfo | null>(null)
+  const [totalSats, setTotalSats] = useState<number | null>(null)
+  const [utxoList, setUtxoList] = useState<UTXO[]>([])
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -95,12 +92,29 @@ function App() {
     setLoading(true)
     setError('')
     try {
-      const [bal, hist] = await Promise.all([
-        fetchBalance(addr, net),
+      const [utxoData, hist] = await Promise.all([
+        fetchBalanceFromUTXOs(addr, net),
         fetchTxHistory(addr, net),
       ])
-      setBalance(bal)
-      setTxHistory(hist.slice(0, 20))
+      setTotalSats(utxoData.total)
+      setUtxoList(utxoData.utxos)
+      // Build history from UTXOs if the history endpoint returned nothing
+      if (hist.length === 0 && utxoData.utxos.length > 0) {
+        const utxoHistory: TxHistoryItem[] = utxoData.utxos.map(u => ({
+          tx_hash: u.tx_hash,
+          height: u.height,
+        }))
+        // Deduplicate by tx_hash
+        const seen = new Set<string>()
+        const deduped = utxoHistory.filter(t => {
+          if (seen.has(t.tx_hash)) return false
+          seen.add(t.tx_hash)
+          return true
+        })
+        setTxHistory(deduped.slice(0, 20))
+      } else {
+        setTxHistory(hist.slice(0, 20))
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load wallet data')
     } finally {
@@ -155,7 +169,8 @@ function App() {
   const handleLogout = useCallback(() => {
     setPrivateKey(null)
     setAddress('')
-    setBalance(null)
+    setTotalSats(null)
+    setUtxoList([])
     setTxHistory([])
     setWifInput('')
     setError('')
@@ -303,7 +318,7 @@ function App() {
     )
   }
 
-  const totalBalance = balance ? balance.confirmed + balance.unconfirmed : 0
+  const totalBalance = totalSats ?? 0
 
   return (
     <div className="wallet-container">
@@ -317,7 +332,7 @@ function App() {
 
       <div className="balance-card">
         <div className="label">残高</div>
-        {loading && !balance ? (
+        {loading && totalSats === null ? (
           <div className="amount"><span className="spinner"></span></div>
         ) : (
           <>
@@ -327,8 +342,8 @@ function App() {
             </div>
             <div className="satoshis">
               {totalBalance.toLocaleString()} satoshis
-              {balance && balance.unconfirmed !== 0 && (
-                <span> (未確認: {balance.unconfirmed.toLocaleString()} sat)</span>
+              {utxoList.length > 0 && (
+                <span> ({utxoList.length} UTXO{utxoList.length > 1 ? 's' : ''})</span>
               )}
             </div>
           </>
