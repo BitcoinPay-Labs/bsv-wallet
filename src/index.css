@@ -1,0 +1,61 @@
+:root {
+  --bg: #0f1118;
+  --bg-card: #1a1d2e;
+  --bg-input: #252840;
+  --text: #c8cad0;
+  --text-h: #f0f1f5;
+  --text-dim: #6b6f80;
+  --accent: #f7931a;
+  --accent-hover: #e8850f;
+  --danger: #ef4444;
+  --success: #22c55e;
+  --border: #2e3148;
+  --sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  font: 15px/1.5 var(--sans);
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px 16px;
+}
+
+#root {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+input, textarea {
+  font-family: var(--sans);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input:focus, textarea:focus {
+  border-color: var(--accent);
+}
