@@ -222,6 +222,63 @@ function App() {
     setNewKeyAddress('')
   }, [])
 
+  const buildAndBroadcast = useCallback(async (
+    pk: PrivateKey,
+    addr: string,
+    dest: string,
+    satoshisToSend: number,
+    utxos: UTXO[],
+    net: Network,
+  ): Promise<string> => {
+    const tx = new Transaction()
+
+    // Prefer unconfirmed UTXOs first (height=0) - they represent the latest chain state
+    // and avoid mempool conflicts with already-spent confirmed UTXOs
+    const sortedUtxos = [...utxos].sort((a, b) => {
+      if (a.height === 0 && b.height !== 0) return -1
+      if (a.height !== 0 && b.height === 0) return 1
+      return b.value - a.value
+    })
+
+    let totalInput = 0
+    const usedUtxos: UTXO[] = []
+
+    for (const utxo of sortedUtxos) {
+      usedUtxos.push(utxo)
+      totalInput += utxo.value
+      if (totalInput >= satoshisToSend + 500) break
+    }
+
+    if (totalInput < satoshisToSend + 200) {
+      throw new Error(`Insufficient balance. Available: ${satsToBsv(totalInput)} BSV`)
+    }
+
+    for (const utxo of usedUtxos) {
+      const rawHex = await fetchRawTx(utxo.tx_hash, net)
+      const sourceTransaction = Transaction.fromHex(rawHex)
+      tx.addInput({
+        sourceTransaction,
+        sourceOutputIndex: utxo.tx_pos,
+        unlockingScriptTemplate: new P2PKH().unlock(pk),
+      })
+    }
+
+    tx.addOutput({
+      lockingScript: new P2PKH().lock(dest),
+      satoshis: satoshisToSend,
+    })
+
+    tx.addOutput({
+      lockingScript: new P2PKH().lock(addr),
+      change: true,
+    })
+
+    await tx.fee(new SatoshisPerKilobyte(1))
+    await tx.sign()
+
+    return broadcastTx(tx.toHex(), net)
+  }, [])
+
   const handleSend = useCallback(async () => {
     if (!privateKey || !sendTo || !sendAmount) return
     setSending(true)
@@ -237,47 +294,22 @@ function App() {
         throw new Error('No UTXOs available')
       }
 
-      const tx = new Transaction()
-
-      const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value)
-      let totalInput = 0
-      const usedUtxos: UTXO[] = []
-
-      for (const utxo of sortedUtxos) {
-        usedUtxos.push(utxo)
-        totalInput += utxo.value
-        if (totalInput >= satoshisToSend + 500) break
+      let txid: string
+      try {
+        txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, utxos, network)
+      } catch (firstErr) {
+        // On mempool-conflict, retry with only unconfirmed UTXOs
+        const errMsg = firstErr instanceof Error ? firstErr.message : ''
+        if (errMsg.includes('mempool-conflict') || errMsg.includes('Missing inputs')) {
+          const unconfirmedOnly = utxos.filter(u => u.height === 0)
+          if (unconfirmedOnly.length === 0) {
+            throw new Error('Transaction conflict - please wait for confirmations and try again')
+          }
+          txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, unconfirmedOnly, network)
+        } else {
+          throw firstErr
+        }
       }
-
-      if (totalInput < satoshisToSend + 200) {
-        throw new Error(`Insufficient balance. Available: ${satsToBsv(totalInput)} BSV`)
-      }
-
-      for (const utxo of usedUtxos) {
-        const rawHex = await fetchRawTx(utxo.tx_hash, network)
-        const sourceTransaction = Transaction.fromHex(rawHex)
-        tx.addInput({
-          sourceTransaction,
-          sourceOutputIndex: utxo.tx_pos,
-          unlockingScriptTemplate: new P2PKH().unlock(privateKey),
-        })
-      }
-
-      tx.addOutput({
-        lockingScript: new P2PKH().lock(sendTo),
-        satoshis: satoshisToSend,
-      })
-
-      tx.addOutput({
-        lockingScript: new P2PKH().lock(address),
-        change: true,
-      })
-
-      await tx.fee(new SatoshisPerKilobyte(1))
-      await tx.sign()
-
-      const rawHex = tx.toHex()
-      const txid = await broadcastTx(rawHex, network)
 
       setStatusMsg({ type: 'success', text: `Sent! TX: ${txid}` })
       setShowSend(false)
@@ -292,7 +324,7 @@ function App() {
     } finally {
       setSending(false)
     }
-  }, [privateKey, sendTo, sendAmount, address, network, loadWalletData])
+  }, [privateKey, sendTo, sendAmount, address, network, loadWalletData, buildAndBroadcast])
 
   useEffect(() => {
     if (!address) return
