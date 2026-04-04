@@ -302,6 +302,16 @@
   color: var(--text-h);
 }
 
+.action-btn.generate {
+  background: var(--bg-card);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+.action-btn.generate:hover {
+  border-color: var(--accent);
+}
+
 .action-btn.logout {
   background: var(--bg-card);
   color: var(--danger);
@@ -310,6 +320,24 @@
 
 .action-btn.logout:hover {
   border-color: var(--danger);
+}
+
+.generated-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.generated-key-value {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-h);
+  word-break: break-all;
+  background: var(--bg-input);
+  padding: 10px 12px;
+  border-radius: 8px;
+  line-height: 1.4;
 }
 
 .send-form {
