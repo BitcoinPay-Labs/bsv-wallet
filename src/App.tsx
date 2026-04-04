@@ -26,10 +26,15 @@ const EXPLORER_BASE: Record<Network, string> = {
   testnet: 'https://test.whatsonchain.com/tx',
 }
 
-async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; utxos: UTXO[] }> {
+async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; confirmed: number; unconfirmed: number; utxos: UTXO[] }> {
   const utxos = await fetchUTXOs(address, network)
-  const total = utxos.reduce((sum, u) => sum + u.value, 0)
-  return { total, utxos }
+  let confirmed = 0
+  let unconfirmed = 0
+  for (const u of utxos) {
+    if (u.height > 0) confirmed += u.value
+    else unconfirmed += u.value
+  }
+  return { total: confirmed + unconfirmed, confirmed, unconfirmed, utxos }
 }
 
 async function fetchUTXOs(address: string, network: Network): Promise<UTXO[]> {
@@ -76,6 +81,8 @@ function App() {
   const [privateKey, setPrivateKey] = useState<PrivateKey | null>(null)
   const [address, setAddress] = useState('')
   const [totalSats, setTotalSats] = useState<number | null>(null)
+  const [confirmedSats, setConfirmedSats] = useState(0)
+  const [unconfirmedSats, setUnconfirmedSats] = useState(0)
   const [utxoList, setUtxoList] = useState<UTXO[]>([])
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -101,6 +108,8 @@ function App() {
         fetchTxHistory(addr, net),
       ])
       setTotalSats(utxoData.total)
+      setConfirmedSats(utxoData.confirmed)
+      setUnconfirmedSats(utxoData.unconfirmed)
       setUtxoList(utxoData.utxos)
       // Build history from UTXOs if the history endpoint returned nothing
       if (hist.length === 0 && utxoData.utxos.length > 0) {
@@ -199,6 +208,8 @@ function App() {
     setPrivateKey(null)
     setAddress('')
     setTotalSats(null)
+    setConfirmedSats(0)
+    setUnconfirmedSats(0)
     setUtxoList([])
     setTxHistory([])
     setWifInput('')
@@ -273,7 +284,9 @@ function App() {
       setSendTo('')
       setSendAmount('')
 
-      setTimeout(() => loadWalletData(address, network), 2000)
+      // Refresh immediately, then again after 3s for mempool propagation
+      loadWalletData(address, network)
+      setTimeout(() => loadWalletData(address, network), 3000)
     } catch (e) {
       setStatusMsg({ type: 'error', text: e instanceof Error ? e.message : 'Send failed' })
     } finally {
@@ -285,7 +298,7 @@ function App() {
     if (!address) return
     const interval = setInterval(() => {
       loadWalletData(address, network)
-    }, 30000)
+    }, 15000)
     return () => clearInterval(interval)
   }, [address, network, loadWalletData])
 
@@ -378,6 +391,11 @@ function App() {
                 <span> ({utxoList.length} UTXO{utxoList.length > 1 ? 's' : ''})</span>
               )}
             </div>
+            {unconfirmedSats > 0 && (
+              <div className="unconfirmed-badge">
+                確認済: {confirmedSats.toLocaleString()} sat / 未確認: {unconfirmedSats.toLocaleString()} sat
+              </div>
+            )}
           </>
         )}
       </div>
