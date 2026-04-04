@@ -52,9 +52,12 @@ async function fetchTxHistory(address: string, network: Network): Promise<TxHist
 }
 
 async function fetchRawTx(txid: string, network: Network): Promise<string> {
-  const res = await fetch(`${WOC_BASE[network]}/tx/${txid}/hex`)
-  if (!res.ok) throw new Error(`Failed to fetch tx ${txid}`)
-  return res.text()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`${WOC_BASE[network]}/tx/${txid}/hex`)
+    if (res.ok) return res.text()
+    if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+  }
+  throw new Error(`Failed to fetch tx ${txid}`)
 }
 
 async function broadcastTx(rawHex: string, network: Network): Promise<string> {
