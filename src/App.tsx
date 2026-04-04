@@ -87,6 +87,10 @@ function App() {
   const [sending, setSending] = useState(false)
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
   const [generatedWif, setGeneratedWif] = useState('')
+  const [showGenerate, setShowGenerate] = useState(false)
+  const [newKeyWif, setNewKeyWif] = useState('')
+  const [newKeyAddress, setNewKeyAddress] = useState('')
+  const [newKeyCopied, setNewKeyCopied] = useState<'wif' | 'addr' | null>(null)
 
   const loadWalletData = useCallback(async (addr: string, net: Network) => {
     setLoading(true)
@@ -143,6 +147,31 @@ function App() {
     setWifInput(wif)
   }, [])
 
+  const handleGenerateNewKey = useCallback(() => {
+    const pk = PrivateKey.fromRandom()
+    const wif = pk.toWif()
+    const addr = pk.toPublicKey().toAddress(network === 'testnet' ? [0x6f] : [0x00])
+    setNewKeyWif(wif)
+    setNewKeyAddress(addr)
+    setShowGenerate(true)
+    setNewKeyCopied(null)
+  }, [network])
+
+  const handleCopyNewKey = useCallback(async (text: string, type: 'wif' | 'addr') => {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const el = document.createElement('textarea')
+      el.value = text
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+    setNewKeyCopied(type)
+    setTimeout(() => setNewKeyCopied(null), 2000)
+  }, [])
+
   const handleCopyAddress = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(address)
@@ -177,6 +206,9 @@ function App() {
     setStatusMsg(null)
     setShowSend(false)
     setGeneratedWif('')
+    setShowGenerate(false)
+    setNewKeyWif('')
+    setNewKeyAddress('')
   }, [])
 
   const handleSend = useCallback(async () => {
@@ -367,6 +399,9 @@ function App() {
         <button className="action-btn send" onClick={() => setShowSend(!showSend)}>
           {showSend ? 'X Close' : 'Send'}
         </button>
+        <button className="action-btn generate" onClick={handleGenerateNewKey}>
+          Generate Key
+        </button>
         <button className="action-btn refresh" onClick={handleRefresh} disabled={loading}>
           {loading ? <span className="spinner"></span> : null} Refresh
         </button>
@@ -378,6 +413,46 @@ function App() {
       {statusMsg && (
         <div className={`status-msg ${statusMsg.type}`}>
           {statusMsg.text}
+        </div>
+      )}
+
+      {showGenerate && newKeyWif && (
+        <div className="send-form">
+          <h3>新しい秘密鍵を生成しました</h3>
+          <div className="generated-key-section">
+            <div className="form-group">
+              <label>秘密鍵 (WIF)</label>
+              <div className="generated-key-row">
+                <div className="generated-key-value">{newKeyWif}</div>
+                <button
+                  className={`copy-btn ${newKeyCopied === 'wif' ? 'copied' : ''}`}
+                  onClick={() => handleCopyNewKey(newKeyWif, 'wif')}
+                >
+                  {newKeyCopied === 'wif' ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>アドレス ({network === 'testnet' ? 'Testnet' : 'Mainnet'})</label>
+              <div className="generated-key-row">
+                <div className="generated-key-value">{newKeyAddress}</div>
+                <button
+                  className={`copy-btn ${newKeyCopied === 'addr' ? 'copied' : ''}`}
+                  onClick={() => handleCopyNewKey(newKeyAddress, 'addr')}
+                >
+                  {newKeyCopied === 'addr' ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+            <div className="status-msg info" style={{ marginTop: '12px' }}>
+              Warning: この秘密鍵を安全な場所に保存してください。一度閉じると再表示できません。
+            </div>
+            <div className="form-buttons">
+              <button className="cancel-btn" onClick={() => { setShowGenerate(false); setNewKeyWif(''); setNewKeyAddress(''); }}>
+                閉じる
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
