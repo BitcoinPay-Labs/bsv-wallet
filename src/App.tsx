@@ -26,10 +26,15 @@ const EXPLORER_BASE: Record<Network, string> = {
   testnet: 'https://test.whatsonchain.com/tx',
 }
 
-async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; utxos: UTXO[] }> {
+async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; confirmed: number; unconfirmed: number; utxos: UTXO[] }> {
   const utxos = await fetchUTXOs(address, network)
-  const total = utxos.reduce((sum, u) => sum + u.value, 0)
-  return { total, utxos }
+  let confirmed = 0
+  let unconfirmed = 0
+  for (const u of utxos) {
+    if (u.height > 0) confirmed += u.value
+    else unconfirmed += u.value
+  }
+  return { total: confirmed + unconfirmed, confirmed, unconfirmed, utxos }
 }
 
 async function fetchUTXOs(address: string, network: Network): Promise<UTXO[]> {
@@ -47,9 +52,12 @@ async function fetchTxHistory(address: string, network: Network): Promise<TxHist
 }
 
 async function fetchRawTx(txid: string, network: Network): Promise<string> {
-  const res = await fetch(`${WOC_BASE[network]}/tx/${txid}/hex`)
-  if (!res.ok) throw new Error(`Failed to fetch tx ${txid}`)
-  return res.text()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`${WOC_BASE[network]}/tx/${txid}/hex`)
+    if (res.ok) return res.text()
+    if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+  }
+  throw new Error(`Failed to fetch tx ${txid}`)
 }
 
 async function broadcastTx(rawHex: string, network: Network): Promise<string> {
@@ -76,6 +84,8 @@ function App() {
   const [privateKey, setPrivateKey] = useState<PrivateKey | null>(null)
   const [address, setAddress] = useState('')
   const [totalSats, setTotalSats] = useState<number | null>(null)
+  const [confirmedSats, setConfirmedSats] = useState(0)
+  const [unconfirmedSats, setUnconfirmedSats] = useState(0)
   const [utxoList, setUtxoList] = useState<UTXO[]>([])
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -101,6 +111,8 @@ function App() {
         fetchTxHistory(addr, net),
       ])
       setTotalSats(utxoData.total)
+      setConfirmedSats(utxoData.confirmed)
+      setUnconfirmedSats(utxoData.unconfirmed)
       setUtxoList(utxoData.utxos)
       // Build history from UTXOs if the history endpoint returned nothing
       if (hist.length === 0 && utxoData.utxos.length > 0) {
@@ -199,6 +211,8 @@ function App() {
     setPrivateKey(null)
     setAddress('')
     setTotalSats(null)
+    setConfirmedSats(0)
+    setUnconfirmedSats(0)
     setUtxoList([])
     setTxHistory([])
     setWifInput('')
@@ -209,6 +223,63 @@ function App() {
     setShowGenerate(false)
     setNewKeyWif('')
     setNewKeyAddress('')
+  }, [])
+
+  const buildAndBroadcast = useCallback(async (
+    pk: PrivateKey,
+    addr: string,
+    dest: string,
+    satoshisToSend: number,
+    utxos: UTXO[],
+    net: Network,
+  ): Promise<string> => {
+    const tx = new Transaction()
+
+    // Prefer unconfirmed UTXOs first (height=0) - they represent the latest chain state
+    // and avoid mempool conflicts with already-spent confirmed UTXOs
+    const sortedUtxos = [...utxos].sort((a, b) => {
+      if (a.height === 0 && b.height !== 0) return -1
+      if (a.height !== 0 && b.height === 0) return 1
+      return b.value - a.value
+    })
+
+    let totalInput = 0
+    const usedUtxos: UTXO[] = []
+
+    for (const utxo of sortedUtxos) {
+      usedUtxos.push(utxo)
+      totalInput += utxo.value
+      if (totalInput >= satoshisToSend + 500) break
+    }
+
+    if (totalInput < satoshisToSend + 200) {
+      throw new Error(`Insufficient balance. Available: ${satsToBsv(totalInput)} BSV`)
+    }
+
+    for (const utxo of usedUtxos) {
+      const rawHex = await fetchRawTx(utxo.tx_hash, net)
+      const sourceTransaction = Transaction.fromHex(rawHex)
+      tx.addInput({
+        sourceTransaction,
+        sourceOutputIndex: utxo.tx_pos,
+        unlockingScriptTemplate: new P2PKH().unlock(pk),
+      })
+    }
+
+    tx.addOutput({
+      lockingScript: new P2PKH().lock(dest),
+      satoshis: satoshisToSend,
+    })
+
+    tx.addOutput({
+      lockingScript: new P2PKH().lock(addr),
+      change: true,
+    })
+
+    await tx.fee(new SatoshisPerKilobyte(1))
+    await tx.sign()
+
+    return broadcastTx(tx.toHex(), net)
   }, [])
 
   const handleSend = useCallback(async () => {
@@ -226,66 +297,43 @@ function App() {
         throw new Error('No UTXOs available')
       }
 
-      const tx = new Transaction()
-
-      const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value)
-      let totalInput = 0
-      const usedUtxos: UTXO[] = []
-
-      for (const utxo of sortedUtxos) {
-        usedUtxos.push(utxo)
-        totalInput += utxo.value
-        if (totalInput >= satoshisToSend + 500) break
+      let txid: string
+      try {
+        txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, utxos, network)
+      } catch (firstErr) {
+        // On mempool-conflict, retry with only unconfirmed UTXOs
+        const errMsg = firstErr instanceof Error ? firstErr.message : ''
+        if (errMsg.includes('mempool-conflict') || errMsg.includes('Missing inputs')) {
+          const unconfirmedOnly = utxos.filter(u => u.height === 0)
+          if (unconfirmedOnly.length === 0) {
+            throw new Error('Transaction conflict - please wait for confirmations and try again')
+          }
+          txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, unconfirmedOnly, network)
+        } else {
+          throw firstErr
+        }
       }
-
-      if (totalInput < satoshisToSend + 200) {
-        throw new Error(`Insufficient balance. Available: ${satsToBsv(totalInput)} BSV`)
-      }
-
-      for (const utxo of usedUtxos) {
-        const rawHex = await fetchRawTx(utxo.tx_hash, network)
-        const sourceTransaction = Transaction.fromHex(rawHex)
-        tx.addInput({
-          sourceTransaction,
-          sourceOutputIndex: utxo.tx_pos,
-          unlockingScriptTemplate: new P2PKH().unlock(privateKey),
-        })
-      }
-
-      tx.addOutput({
-        lockingScript: new P2PKH().lock(sendTo),
-        satoshis: satoshisToSend,
-      })
-
-      tx.addOutput({
-        lockingScript: new P2PKH().lock(address),
-        change: true,
-      })
-
-      await tx.fee(new SatoshisPerKilobyte(1))
-      await tx.sign()
-
-      const rawHex = tx.toHex()
-      const txid = await broadcastTx(rawHex, network)
 
       setStatusMsg({ type: 'success', text: `Sent! TX: ${txid}` })
       setShowSend(false)
       setSendTo('')
       setSendAmount('')
 
-      setTimeout(() => loadWalletData(address, network), 2000)
+      // Refresh immediately, then again after 3s for mempool propagation
+      loadWalletData(address, network)
+      setTimeout(() => loadWalletData(address, network), 3000)
     } catch (e) {
       setStatusMsg({ type: 'error', text: e instanceof Error ? e.message : 'Send failed' })
     } finally {
       setSending(false)
     }
-  }, [privateKey, sendTo, sendAmount, address, network, loadWalletData])
+  }, [privateKey, sendTo, sendAmount, address, network, loadWalletData, buildAndBroadcast])
 
   useEffect(() => {
     if (!address) return
     const interval = setInterval(() => {
       loadWalletData(address, network)
-    }, 30000)
+    }, 15000)
     return () => clearInterval(interval)
   }, [address, network, loadWalletData])
 
@@ -378,6 +426,11 @@ function App() {
                 <span> ({utxoList.length} UTXO{utxoList.length > 1 ? 's' : ''})</span>
               )}
             </div>
+            {unconfirmedSats > 0 && (
+              <div className="unconfirmed-badge">
+                確認済: {confirmedSats.toLocaleString()} sat / 未確認: {unconfirmedSats.toLocaleString()} sat
+              </div>
+            )}
           </>
         )}
       </div>

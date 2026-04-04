@@ -215,6 +215,17 @@
   font-family: var(--mono);
 }
 
+.unconfirmed-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: rgba(247, 147, 26, 0.15);
+  color: var(--accent);
+}
+
 .address-card {
   padding: 20px;
   background: var(--bg-card);
