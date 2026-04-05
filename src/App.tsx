@@ -314,10 +314,16 @@ function App() {
         }
       }
 
-      setStatusMsg({ type: 'success', text: `Sent! TX: ${txid}` })
+      setStatusMsg({ type: 'success', text: `Sent! TX:\n${txid}` })
       setShowSend(false)
       setSendTo('')
       setSendAmount('')
+
+      // Optimistically add the new tx to history immediately
+      setTxHistory(prev => {
+        if (prev.some(t => t.tx_hash === txid)) return prev
+        return [{ tx_hash: txid, height: 0 }, ...prev]
+      })
 
       // Refresh immediately, then again after 3s for mempool propagation
       loadWalletData(address, network)
