@@ -477,6 +477,7 @@
   border-radius: 10px;
   font-size: 13px;
   font-weight: 500;
+  word-break: break-all;
 }
 
 .status-msg.success {
