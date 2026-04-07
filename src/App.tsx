@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { PrivateKey, P2PKH, Transaction, SatoshisPerKilobyte } from '@bsv/sdk'
+import { PrivateKey, P2PKH, Transaction, SatoshisPerKilobyte, Hash } from '@bsv/sdk'
+import { usePrivy, useLoginWithEmail } from '@privy-io/react-auth'
 import './App.css'
+
+type LoginMethod = 'wif' | 'email'
 
 type Network = 'mainnet' | 'testnet'
 
@@ -78,8 +81,19 @@ function satsToBsv(sats: number): string {
   return (sats / 1e8).toFixed(8)
 }
 
+// Derive a deterministic BSV PrivateKey from a stable Privy user ID
+function deriveBsvKeyFromUserId(userId: string): PrivateKey {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(`bsv-wallet:${userId}`)
+  const hashBytes = Hash.sha256(data)
+  // hashBytes is a number[] (32 bytes) - convert to hex string
+  const hexStr = Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+  return new PrivateKey(hexStr, 16)
+}
+
 function App() {
-  const [network, setNetwork] = useState<Network>('mainnet')
+  const [network, setNetwork] = useState<Network>('testnet')
+  const [loginMethod, setLoginMethod] = useState<LoginMethod>('email')
   const [wifInput, setWifInput] = useState('')
   const [privateKey, setPrivateKey] = useState<PrivateKey | null>(null)
   const [address, setAddress] = useState('')
@@ -101,6 +115,16 @@ function App() {
   const [newKeyWif, setNewKeyWif] = useState('')
   const [newKeyAddress, setNewKeyAddress] = useState('')
   const [newKeyCopied, setNewKeyCopied] = useState<'wif' | 'addr' | null>(null)
+
+  // Privy email login state
+  const [emailInput, setEmailInput] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [otpSent, setOtpSent] = useState(false)
+  const [emailLoading, setEmailLoading] = useState(false)
+
+  // Privy hooks
+  const { ready: privyReady, authenticated: privyAuthenticated, user: privyUser, logout: privyLogout } = usePrivy()
+  const { sendCode, loginWithCode } = useLoginWithEmail()
 
   // Ref to track optimistic tx hashes that must survive API refreshes
   const pendingTxRef = useRef<Set<string>>(new Set())
@@ -222,7 +246,7 @@ function App() {
     }
   }, [address, network, loading, loadWalletData])
 
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
     setPrivateKey(null)
     setAddress('')
     setTotalSats(null)
@@ -238,7 +262,61 @@ function App() {
     setShowGenerate(false)
     setNewKeyWif('')
     setNewKeyAddress('')
-  }, [])
+    setEmailInput('')
+    setOtpCode('')
+    setOtpSent(false)
+    // Also logout from Privy if authenticated
+    if (privyAuthenticated) {
+      try { await privyLogout() } catch { /* ignore */ }
+    }
+  }, [privyAuthenticated, privyLogout])
+
+  // Handle Privy email OTP send
+  const handleSendOtp = useCallback(async () => {
+    if (!emailInput.trim()) return
+    setEmailLoading(true)
+    setError('')
+    try {
+      await sendCode({ email: emailInput.trim() })
+      setOtpSent(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to send verification code')
+    } finally {
+      setEmailLoading(false)
+    }
+  }, [emailInput, sendCode])
+
+  // Handle Privy email OTP verification
+  const handleVerifyOtp = useCallback(async () => {
+    if (!otpCode.trim()) return
+    setEmailLoading(true)
+    setError('')
+    try {
+      await loginWithCode({ code: otpCode.trim() })
+      // After successful login, privyUser will be set via useEffect below
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Invalid verification code')
+    } finally {
+      setEmailLoading(false)
+    }
+  }, [otpCode, loginWithCode])
+
+  // When Privy auth succeeds, derive BSV key from user ID and open testnet wallet
+  useEffect(() => {
+    if (privyReady && privyAuthenticated && privyUser && !privateKey) {
+      try {
+        const pk = deriveBsvKeyFromUserId(privyUser.id)
+        setPrivateKey(pk)
+        const net: Network = 'testnet'
+        setNetwork(net)
+        const addr = pk.toPublicKey().toAddress([0x6f]) // testnet
+        setAddress(addr)
+        loadWalletData(addr, net)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to derive BSV key from Privy account')
+      }
+    }
+  }, [privyReady, privyAuthenticated, privyUser, privateKey, loadWalletData])
 
   const buildAndBroadcast = useCallback(async (
     pk: PrivateKey,
@@ -370,53 +448,134 @@ function App() {
         <div className="login-screen">
           <div className="logo">&#8383;</div>
           <h2>BSV Wallet</h2>
-          <p>秘密鍵（WIF形式）でログインしてください。<br />Testnet と Mainnet に対応しています。</p>
+          <p>ログイン方法を選択してください。</p>
 
+          {/* Login method tabs */}
           <div className="network-selector">
             <button
-              className={`network-btn ${network === 'mainnet' ? 'active' : ''}`}
-              onClick={() => setNetwork('mainnet')}
+              className={`network-btn ${loginMethod === 'email' ? 'active' : ''}`}
+              onClick={() => { setLoginMethod('email'); setError('') }}
             >
-              Mainnet
+              メールログイン
             </button>
             <button
-              className={`network-btn ${network === 'testnet' ? 'active' : ''}`}
-              onClick={() => setNetwork('testnet')}
+              className={`network-btn ${loginMethod === 'wif' ? 'active' : ''}`}
+              onClick={() => { setLoginMethod('wif'); setError('') }}
             >
-              Testnet
+              秘密鍵 (WIF)
             </button>
           </div>
 
-          <div className="wif-input-group">
-            <label>秘密鍵 (WIF)</label>
-            <input
-              type="password"
-              placeholder="WIF形式の秘密鍵を入力..."
-              value={wifInput}
-              onChange={(e) => setWifInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && wifInput.trim() && handleLogin()}
-            />
-          </div>
+          {loginMethod === 'email' ? (
+            /* Privy Email OTP Login */
+            <>
+              {!otpSent ? (
+                <>
+                  <div className="wif-input-group">
+                    <label>メールアドレス</label>
+                    <input
+                      type="email"
+                      placeholder="example@mail.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && emailInput.trim() && handleSendOtp()}
+                    />
+                  </div>
+                  <button
+                    className="login-btn"
+                    onClick={handleSendOtp}
+                    disabled={!emailInput.trim() || emailLoading}
+                  >
+                    {emailLoading ? <><span className="spinner"></span> 送信中...</> : '認証コードを送信'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="status-msg info">
+                    {emailInput} に6桁の認証コードを送信しました
+                  </div>
+                  <div className="wif-input-group">
+                    <label>認証コード（6桁）</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      placeholder="000000"
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      onKeyDown={(e) => e.key === 'Enter' && otpCode.length === 6 && handleVerifyOtp()}
+                      style={{ textAlign: 'center', fontSize: '24px', letterSpacing: '8px' }}
+                    />
+                  </div>
+                  <button
+                    className="login-btn"
+                    onClick={handleVerifyOtp}
+                    disabled={otpCode.length !== 6 || emailLoading}
+                  >
+                    {emailLoading ? <><span className="spinner"></span> 認証中...</> : 'ログイン'}
+                  </button>
+                  <button
+                    className="generate-btn"
+                    onClick={() => { setOtpSent(false); setOtpCode(''); setError('') }}
+                  >
+                    メールアドレスを変更する
+                  </button>
+                </>
+              )}
+              <div style={{ fontSize: '12px', color: 'var(--text-dim)', textAlign: 'center' }}>
+                Privy認証後、BSV Testnetウォレットが自動生成されます
+              </div>
+            </>
+          ) : (
+            /* WIF Direct Login */
+            <>
+              <div className="network-selector">
+                <button
+                  className={`network-btn ${network === 'mainnet' ? 'active' : ''}`}
+                  onClick={() => setNetwork('mainnet')}
+                >
+                  Mainnet
+                </button>
+                <button
+                  className={`network-btn ${network === 'testnet' ? 'active' : ''}`}
+                  onClick={() => setNetwork('testnet')}
+                >
+                  Testnet
+                </button>
+              </div>
+
+              <div className="wif-input-group">
+                <label>秘密鍵 (WIF)</label>
+                <input
+                  type="password"
+                  placeholder="WIF形式の秘密鍵を入力..."
+                  value={wifInput}
+                  onChange={(e) => setWifInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && wifInput.trim() && handleLogin()}
+                />
+              </div>
+
+              <button
+                className="login-btn"
+                onClick={handleLogin}
+                disabled={!wifInput.trim()}
+              >
+                ログイン
+              </button>
+
+              <button className="generate-btn" onClick={handleGenerateKey}>
+                新しい鍵を生成する
+              </button>
+
+              {generatedWif && (
+                <div className="status-msg info" style={{ wordBreak: 'break-all', fontSize: '11px', fontFamily: 'var(--mono)' }}>
+                  Warning: この秘密鍵を安全な場所に保存してください：<br />{generatedWif}
+                </div>
+              )}
+            </>
+          )}
 
           {error && <div className="error-msg">{error}</div>}
-
-          <button
-            className="login-btn"
-            onClick={handleLogin}
-            disabled={!wifInput.trim()}
-          >
-            ログイン
-          </button>
-
-          <button className="generate-btn" onClick={handleGenerateKey}>
-            新しい鍵を生成する
-          </button>
-
-          {generatedWif && (
-            <div className="status-msg info" style={{ wordBreak: 'break-all', fontSize: '11px', fontFamily: 'var(--mono)' }}>
-              Warning: この秘密鍵を安全な場所に保存してください：<br />{generatedWif}
-            </div>
-          )}
         </div>
       </div>
     )
