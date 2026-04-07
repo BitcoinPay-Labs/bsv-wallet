@@ -115,22 +115,28 @@ function App() {
       setUnconfirmedSats(utxoData.unconfirmed)
       setUtxoList(utxoData.utxos)
       // Build history from UTXOs if the history endpoint returned nothing
+      let apiHistory: TxHistoryItem[]
       if (hist.length === 0 && utxoData.utxos.length > 0) {
         const utxoHistory: TxHistoryItem[] = utxoData.utxos.map(u => ({
           tx_hash: u.tx_hash,
           height: u.height,
         }))
-        // Deduplicate by tx_hash
         const seen = new Set<string>()
-        const deduped = utxoHistory.filter(t => {
+        apiHistory = utxoHistory.filter(t => {
           if (seen.has(t.tx_hash)) return false
           seen.add(t.tx_hash)
           return true
         })
-        setTxHistory(deduped.slice(0, 20))
       } else {
-        setTxHistory(hist.slice(0, 20))
+        apiHistory = hist
       }
+      // Merge: keep optimistic (height=0) entries not yet in API response
+      setTxHistory(prev => {
+        const apiHashes = new Set(apiHistory.map(t => t.tx_hash))
+        const optimistic = prev.filter(t => t.height === 0 && !apiHashes.has(t.tx_hash))
+        const merged = [...optimistic, ...apiHistory]
+        return merged.slice(0, 20)
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load wallet data')
     } finally {
