@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { PrivateKey, P2PKH, Transaction, SatoshisPerKilobyte } from '@bsv/sdk'
 import './App.css'
 
@@ -102,6 +102,9 @@ function App() {
   const [newKeyAddress, setNewKeyAddress] = useState('')
   const [newKeyCopied, setNewKeyCopied] = useState<'wif' | 'addr' | null>(null)
 
+  // Ref to track optimistic tx hashes that must survive API refreshes
+  const pendingTxRef = useRef<Set<string>>(new Set())
+
   const loadWalletData = useCallback(async (addr: string, net: Network) => {
     setLoading(true)
     setError('')
@@ -115,22 +118,34 @@ function App() {
       setUnconfirmedSats(utxoData.unconfirmed)
       setUtxoList(utxoData.utxos)
       // Build history from UTXOs if the history endpoint returned nothing
+      let apiHistory: TxHistoryItem[]
       if (hist.length === 0 && utxoData.utxos.length > 0) {
         const utxoHistory: TxHistoryItem[] = utxoData.utxos.map(u => ({
           tx_hash: u.tx_hash,
           height: u.height,
         }))
-        // Deduplicate by tx_hash
         const seen = new Set<string>()
-        const deduped = utxoHistory.filter(t => {
+        apiHistory = utxoHistory.filter(t => {
           if (seen.has(t.tx_hash)) return false
           seen.add(t.tx_hash)
           return true
         })
-        setTxHistory(deduped.slice(0, 20))
       } else {
-        setTxHistory(hist.slice(0, 20))
+        apiHistory = hist
       }
+      // Merge: always re-add pending optimistic entries from ref
+      const apiHashes = new Set(apiHistory.map(t => t.tx_hash))
+      // Remove from pending ref any entries now confirmed by API
+      for (const h of pendingTxRef.current) {
+        if (apiHashes.has(h)) pendingTxRef.current.delete(h)
+      }
+      // Build optimistic entries from ref (guaranteed source of truth)
+      const optimisticEntries: TxHistoryItem[] = []
+      for (const h of pendingTxRef.current) {
+        optimisticEntries.push({ tx_hash: h, height: 0 })
+      }
+      const merged = [...optimisticEntries, ...apiHistory]
+      setTxHistory(merged.slice(0, 20))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load wallet data')
     } finally {
@@ -319,14 +334,17 @@ function App() {
       setSendTo('')
       setSendAmount('')
 
+      // Track this tx in the ref so it survives any concurrent/future refreshes
+      pendingTxRef.current.add(txid)
+
       // Optimistically add the new tx to history immediately
       setTxHistory(prev => {
         if (prev.some(t => t.tx_hash === txid)) return prev
         return [{ tx_hash: txid, height: 0 }, ...prev]
       })
 
-      // Refresh immediately, then again after 3s for mempool propagation
-      loadWalletData(address, network)
+      // Refresh after a short delay to let React render the optimistic entry first
+      setTimeout(() => loadWalletData(address, network), 200)
       setTimeout(() => loadWalletData(address, network), 3000)
     } catch (e) {
       setStatusMsg({ type: 'error', text: e instanceof Error ? e.message : 'Send failed' })
