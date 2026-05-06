@@ -91,6 +91,39 @@ function deriveBsvKeyFromUserId(userId: string): PrivateKey {
   return new PrivateKey(hexStr, 16)
 }
 
+const STORAGE_KEY_WIF = 'bsv-wallet:wif'
+const STORAGE_KEY_NETWORK = 'bsv-wallet:network'
+
+function loadStoredSession(): { wif: string; network: Network } | null {
+  try {
+    const wif = localStorage.getItem(STORAGE_KEY_WIF)
+    const networkRaw = localStorage.getItem(STORAGE_KEY_NETWORK)
+    if (!wif) return null
+    const network: Network = networkRaw === 'testnet' ? 'testnet' : 'mainnet'
+    return { wif, network }
+  } catch {
+    return null
+  }
+}
+
+function saveSession(wif: string, network: Network) {
+  try {
+    localStorage.setItem(STORAGE_KEY_WIF, wif)
+    localStorage.setItem(STORAGE_KEY_NETWORK, network)
+  } catch {
+    /* localStorage may be unavailable (private mode, etc.) */
+  }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(STORAGE_KEY_WIF)
+    localStorage.removeItem(STORAGE_KEY_NETWORK)
+  } catch {
+    /* ignore */
+  }
+}
+
 function App() {
   const [network, setNetwork] = useState<Network>('testnet')
   const [loginMethod, setLoginMethod] = useState<LoginMethod>('email')
@@ -181,15 +214,35 @@ function App() {
     setError('')
     setStatusMsg(null)
     try {
-      const pk = PrivateKey.fromWif(wifInput.trim())
+      const trimmed = wifInput.trim()
+      const pk = PrivateKey.fromWif(trimmed)
       setPrivateKey(pk)
       const addr = pk.toPublicKey().toAddress(network === 'testnet' ? [0x6f] : [0x00])
       setAddress(addr)
+      saveSession(trimmed, network)
       loadWalletData(addr, network)
     } catch {
       setError('Invalid WIF key. Please check your private key and network selection.')
     }
   }, [wifInput, network, loadWalletData])
+
+  // Auto-login on mount if a previous session is stored
+  useEffect(() => {
+    const stored = loadStoredSession()
+    if (!stored) return
+    try {
+      const pk = PrivateKey.fromWif(stored.wif)
+      const addr = pk.toPublicKey().toAddress(stored.network === 'testnet' ? [0x6f] : [0x00])
+      setNetwork(stored.network)
+      setPrivateKey(pk)
+      setAddress(addr)
+      loadWalletData(addr, stored.network)
+    } catch {
+      clearSession()
+    }
+    // Run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleGenerateKey = useCallback(() => {
     const pk = PrivateKey.fromRandom()
@@ -247,6 +300,8 @@ function App() {
   }, [address, network, loading, loadWalletData])
 
   const handleLogout = useCallback(async () => {
+    clearSession()
+    pendingTxRef.current.clear()
     setPrivateKey(null)
     setAddress('')
     setTotalSats(null)
