@@ -1,7 +1,7 @@
 {
-  "name": "BSV Wallet",
-  "short_name": "BSV Wallet",
-  "description": "Bitcoin SV (BSV) browser wallet with WIF key import. Supports Testnet and Mainnet.",
+  "name": "Bitcoin Wallet",
+  "short_name": "Bitcoin",
+  "description": "Multi-chain browser wallet for BSV and BTC (Mainnet / Testnet) with WIF key import.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0a0f",

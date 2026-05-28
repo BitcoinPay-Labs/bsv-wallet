@@ -1,115 +1,71 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { PrivateKey, P2PKH, Transaction, SatoshisPerKilobyte, Hash } from '@bsv/sdk'
+import { Hash } from '@bsv/sdk'
 import { usePrivy, useLoginWithEmail } from '@privy-io/react-auth'
 import './App.css'
+import {
+  CHAINS,
+  type ChainId,
+  type AddressFormat,
+  type UTXO,
+  type TxHistoryItem,
+  deriveAddress,
+  privateKeyHexFromWif,
+  privateKeyHexToWif,
+  generatePrivateKeyHex,
+  fetchBalanceFromUTXOs,
+  fetchUTXOs,
+  fetchTxHistory,
+  buildAndBroadcastTx,
+  explorerTxUrl,
+} from './chains'
 
 type LoginMethod = 'wif' | 'email'
 
-type Network = 'mainnet' | 'testnet'
-
-interface UTXO {
-  tx_hash: string
-  tx_pos: number
-  value: number
-  height: number
-}
-
-interface TxHistoryItem {
-  tx_hash: string
-  height: number
-}
-
-const WOC_BASE: Record<Network, string> = {
-  mainnet: 'https://api.whatsonchain.com/v1/bsv/main',
-  testnet: 'https://api.whatsonchain.com/v1/bsv/test',
-}
-
-const EXPLORER_BASE: Record<Network, string> = {
-  mainnet: 'https://whatsonchain.com/tx',
-  testnet: 'https://test.whatsonchain.com/tx',
-}
-
-async function fetchBalanceFromUTXOs(address: string, network: Network): Promise<{ total: number; confirmed: number; unconfirmed: number; utxos: UTXO[] }> {
-  const utxos = await fetchUTXOs(address, network)
-  let confirmed = 0
-  let unconfirmed = 0
-  for (const u of utxos) {
-    if (u.height > 0) confirmed += u.value
-    else unconfirmed += u.value
-  }
-  return { total: confirmed + unconfirmed, confirmed, unconfirmed, utxos }
-}
-
-async function fetchUTXOs(address: string, network: Network): Promise<UTXO[]> {
-  const res = await fetch(`${WOC_BASE[network]}/address/${address}/unspent`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data) ? data : []
-}
-
-async function fetchTxHistory(address: string, network: Network): Promise<TxHistoryItem[]> {
-  const res = await fetch(`${WOC_BASE[network]}/address/${address}/history`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data) ? data : []
-}
-
-async function fetchRawTx(txid: string, network: Network): Promise<string> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(`${WOC_BASE[network]}/tx/${txid}/hex`)
-    if (res.ok) return res.text()
-    if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
-  }
-  throw new Error(`Failed to fetch tx ${txid}`)
-}
-
-async function broadcastTx(rawHex: string, network: Network): Promise<string> {
-  const res = await fetch(`${WOC_BASE[network]}/tx/raw`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ txhex: rawHex }),
-  })
-  if (!res.ok) {
-    const errText = await res.text()
-    throw new Error(`Broadcast failed: ${errText}`)
-  }
-  const txid = await res.text()
-  return txid.replace(/"/g, '')
-}
-
-function satsToBsv(sats: number): string {
+function satsToCoin(sats: number): string {
   return (sats / 1e8).toFixed(8)
 }
 
-// Derive a deterministic BSV PrivateKey from a stable Privy user ID
-function deriveBsvKeyFromUserId(userId: string): PrivateKey {
+// Derive a deterministic 32-byte private key hex from a stable Privy user ID
+function derivePrivateKeyHexFromUserId(userId: string): string {
   const encoder = new TextEncoder()
   const data = encoder.encode(`bsv-wallet:${userId}`)
   const hashBytes = Hash.sha256(data)
-  // hashBytes is a number[] (32 bytes) - convert to hex string
-  const hexStr = Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('')
-  return new PrivateKey(hexStr, 16)
+  return Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 const STORAGE_KEY_WIF = 'bsv-wallet:wif'
-const STORAGE_KEY_NETWORK = 'bsv-wallet:network'
+const STORAGE_KEY_NETWORK = 'bsv-wallet:network' // legacy: 'mainnet' | 'testnet'
+const STORAGE_KEY_CHAIN = 'bsv-wallet:chain'     // new: ChainId
+const STORAGE_KEY_ADDR_FORMAT = 'bsv-wallet:addrFormat' // new: AddressFormat
 
-function loadStoredSession(): { wif: string; network: Network } | null {
+function isChainId(v: string | null): v is ChainId {
+  return !!v && v in CHAINS
+}
+
+function loadStoredSession(): { wif: string; chain: ChainId; addressFormat: AddressFormat } | null {
   try {
     const wif = localStorage.getItem(STORAGE_KEY_WIF)
-    const networkRaw = localStorage.getItem(STORAGE_KEY_NETWORK)
     if (!wif) return null
-    const network: Network = networkRaw === 'testnet' ? 'testnet' : 'mainnet'
-    return { wif, network }
+    const chainRaw = localStorage.getItem(STORAGE_KEY_CHAIN)
+    const legacyNet = localStorage.getItem(STORAGE_KEY_NETWORK)
+    const chain: ChainId = isChainId(chainRaw)
+      ? chainRaw
+      : legacyNet === 'testnet' ? 'bsv-testnet' : 'bsv-mainnet'
+    const addrRaw = localStorage.getItem(STORAGE_KEY_ADDR_FORMAT)
+    const addressFormat: AddressFormat = addrRaw === 'segwit' ? 'segwit' : 'legacy'
+    return { wif, chain, addressFormat }
   } catch {
     return null
   }
 }
 
-function saveSession(wif: string, network: Network) {
+function saveSession(wif: string, chain: ChainId, addressFormat: AddressFormat) {
   try {
     localStorage.setItem(STORAGE_KEY_WIF, wif)
-    localStorage.setItem(STORAGE_KEY_NETWORK, network)
+    localStorage.setItem(STORAGE_KEY_CHAIN, chain)
+    localStorage.setItem(STORAGE_KEY_ADDR_FORMAT, addressFormat)
+    // Keep legacy key in sync for backward compatibility
+    localStorage.setItem(STORAGE_KEY_NETWORK, CHAINS[chain].isTestnet ? 'testnet' : 'mainnet')
   } catch {
     /* localStorage may be unavailable (private mode, etc.) */
   }
@@ -119,16 +75,19 @@ function clearSession() {
   try {
     localStorage.removeItem(STORAGE_KEY_WIF)
     localStorage.removeItem(STORAGE_KEY_NETWORK)
+    localStorage.removeItem(STORAGE_KEY_CHAIN)
+    localStorage.removeItem(STORAGE_KEY_ADDR_FORMAT)
   } catch {
     /* ignore */
   }
 }
 
 function App() {
-  const [network, setNetwork] = useState<Network>('testnet')
+  const [chain, setChain] = useState<ChainId>('bsv-testnet')
+  const [addressFormat, setAddressFormat] = useState<AddressFormat>('legacy')
   const [loginMethod, setLoginMethod] = useState<LoginMethod>('email')
   const [wifInput, setWifInput] = useState('')
-  const [privateKey, setPrivateKey] = useState<PrivateKey | null>(null)
+  const [privateKeyHex, setPrivateKeyHex] = useState<string | null>(null)
   const [address, setAddress] = useState('')
   const [totalSats, setTotalSats] = useState<number | null>(null)
   const [confirmedSats, setConfirmedSats] = useState(0)
@@ -162,13 +121,13 @@ function App() {
   // Ref to track optimistic tx hashes that must survive API refreshes
   const pendingTxRef = useRef<Set<string>>(new Set())
 
-  const loadWalletData = useCallback(async (addr: string, net: Network) => {
+  const loadWalletData = useCallback(async (addr: string, c: ChainId) => {
     setLoading(true)
     setError('')
     try {
       const [utxoData, hist] = await Promise.all([
-        fetchBalanceFromUTXOs(addr, net),
-        fetchTxHistory(addr, net),
+        fetchBalanceFromUTXOs(addr, c),
+        fetchTxHistory(addr, c),
       ])
       setTotalSats(utxoData.total)
       setConfirmedSats(utxoData.confirmed)
@@ -215,28 +174,30 @@ function App() {
     setStatusMsg(null)
     try {
       const trimmed = wifInput.trim()
-      const pk = PrivateKey.fromWif(trimmed)
-      setPrivateKey(pk)
-      const addr = pk.toPublicKey().toAddress(network === 'testnet' ? [0x6f] : [0x00])
+      const hex = privateKeyHexFromWif(trimmed)
+      const fmt: AddressFormat = CHAINS[chain].isBtc ? addressFormat : 'legacy'
+      const addr = deriveAddress(hex, chain, fmt)
+      setPrivateKeyHex(hex)
       setAddress(addr)
-      saveSession(trimmed, network)
-      loadWalletData(addr, network)
+      saveSession(trimmed, chain, fmt)
+      loadWalletData(addr, chain)
     } catch {
       setError('Invalid WIF key. Please check your private key and network selection.')
     }
-  }, [wifInput, network, loadWalletData])
+  }, [wifInput, chain, addressFormat, loadWalletData])
 
   // Auto-login on mount if a previous session is stored
   useEffect(() => {
     const stored = loadStoredSession()
     if (!stored) return
     try {
-      const pk = PrivateKey.fromWif(stored.wif)
-      const addr = pk.toPublicKey().toAddress(stored.network === 'testnet' ? [0x6f] : [0x00])
-      setNetwork(stored.network)
-      setPrivateKey(pk)
+      const hex = privateKeyHexFromWif(stored.wif)
+      const addr = deriveAddress(hex, stored.chain, stored.addressFormat)
+      setChain(stored.chain)
+      setAddressFormat(stored.addressFormat)
+      setPrivateKeyHex(hex)
       setAddress(addr)
-      loadWalletData(addr, stored.network)
+      loadWalletData(addr, stored.chain)
     } catch {
       clearSession()
     }
@@ -245,21 +206,22 @@ function App() {
   }, [])
 
   const handleGenerateKey = useCallback(() => {
-    const pk = PrivateKey.fromRandom()
-    const wif = pk.toWif()
+    const hex = generatePrivateKeyHex()
+    const wif = privateKeyHexToWif(hex, chain)
     setGeneratedWif(wif)
     setWifInput(wif)
-  }, [])
+  }, [chain])
 
   const handleGenerateNewKey = useCallback(() => {
-    const pk = PrivateKey.fromRandom()
-    const wif = pk.toWif()
-    const addr = pk.toPublicKey().toAddress(network === 'testnet' ? [0x6f] : [0x00])
+    const hex = generatePrivateKeyHex()
+    const wif = privateKeyHexToWif(hex, chain)
+    const fmt: AddressFormat = CHAINS[chain].isBtc ? addressFormat : 'legacy'
+    const addr = deriveAddress(hex, chain, fmt)
     setNewKeyWif(wif)
     setNewKeyAddress(addr)
     setShowGenerate(true)
     setNewKeyCopied(null)
-  }, [network])
+  }, [chain, addressFormat])
 
   const handleCopyNewKey = useCallback(async (text: string, type: 'wif' | 'addr') => {
     try {
@@ -295,14 +257,14 @@ function App() {
 
   const handleRefresh = useCallback(() => {
     if (address && !loading) {
-      loadWalletData(address, network)
+      loadWalletData(address, chain)
     }
-  }, [address, network, loading, loadWalletData])
+  }, [address, chain, loading, loadWalletData])
 
   const handleLogout = useCallback(async () => {
     clearSession()
     pendingTxRef.current.clear()
-    setPrivateKey(null)
+    setPrivateKeyHex(null)
     setAddress('')
     setTotalSats(null)
     setConfirmedSats(0)
@@ -356,82 +318,27 @@ function App() {
     }
   }, [otpCode, loginWithCode])
 
-  // When Privy auth succeeds, derive BSV key from user ID and open testnet wallet
+  // When Privy auth succeeds, derive key from user ID and open BSV testnet wallet
   useEffect(() => {
-    if (privyReady && privyAuthenticated && privyUser && !privateKey) {
+    if (privyReady && privyAuthenticated && privyUser && !privateKeyHex) {
       try {
-        const pk = deriveBsvKeyFromUserId(privyUser.id)
-        setPrivateKey(pk)
-        const net: Network = 'testnet'
-        setNetwork(net)
-        const addr = pk.toPublicKey().toAddress([0x6f]) // testnet
+        const hex = derivePrivateKeyHexFromUserId(privyUser.id)
+        const c: ChainId = 'bsv-testnet'
+        const fmt: AddressFormat = 'legacy'
+        setPrivateKeyHex(hex)
+        setChain(c)
+        setAddressFormat(fmt)
+        const addr = deriveAddress(hex, c, fmt)
         setAddress(addr)
-        loadWalletData(addr, net)
+        loadWalletData(addr, c)
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to derive BSV key from Privy account')
+        setError(e instanceof Error ? e.message : 'Failed to derive key from Privy account')
       }
     }
-  }, [privyReady, privyAuthenticated, privyUser, privateKey, loadWalletData])
-
-  const buildAndBroadcast = useCallback(async (
-    pk: PrivateKey,
-    addr: string,
-    dest: string,
-    satoshisToSend: number,
-    utxos: UTXO[],
-    net: Network,
-  ): Promise<string> => {
-    const tx = new Transaction()
-
-    // Prefer unconfirmed UTXOs first (height=0) - they represent the latest chain state
-    // and avoid mempool conflicts with already-spent confirmed UTXOs
-    const sortedUtxos = [...utxos].sort((a, b) => {
-      if (a.height === 0 && b.height !== 0) return -1
-      if (a.height !== 0 && b.height === 0) return 1
-      return b.value - a.value
-    })
-
-    let totalInput = 0
-    const usedUtxos: UTXO[] = []
-
-    for (const utxo of sortedUtxos) {
-      usedUtxos.push(utxo)
-      totalInput += utxo.value
-      if (totalInput >= satoshisToSend + 500) break
-    }
-
-    if (totalInput < satoshisToSend + 200) {
-      throw new Error(`Insufficient balance. Available: ${satsToBsv(totalInput)} BSV`)
-    }
-
-    for (const utxo of usedUtxos) {
-      const rawHex = await fetchRawTx(utxo.tx_hash, net)
-      const sourceTransaction = Transaction.fromHex(rawHex)
-      tx.addInput({
-        sourceTransaction,
-        sourceOutputIndex: utxo.tx_pos,
-        unlockingScriptTemplate: new P2PKH().unlock(pk),
-      })
-    }
-
-    tx.addOutput({
-      lockingScript: new P2PKH().lock(dest),
-      satoshis: satoshisToSend,
-    })
-
-    tx.addOutput({
-      lockingScript: new P2PKH().lock(addr),
-      change: true,
-    })
-
-    await tx.fee(new SatoshisPerKilobyte(1))
-    await tx.sign()
-
-    return broadcastTx(tx.toHex(), net)
-  }, [])
+  }, [privyReady, privyAuthenticated, privyUser, privateKeyHex, loadWalletData])
 
   const handleSend = useCallback(async () => {
-    if (!privateKey || !sendTo || !sendAmount) return
+    if (!privateKeyHex || !sendTo || !sendAmount) return
     setSending(true)
     setStatusMsg(null)
     try {
@@ -440,14 +347,18 @@ function App() {
         throw new Error('Invalid amount')
       }
 
-      const utxos = await fetchUTXOs(address, network)
+      const utxos = await fetchUTXOs(address, chain)
       if (utxos.length === 0) {
         throw new Error('No UTXOs available')
       }
 
+      const fmt: AddressFormat = CHAINS[chain].isBtc ? addressFormat : 'legacy'
       let txid: string
       try {
-        txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, utxos, network)
+        txid = await buildAndBroadcastTx({
+          privateKeyHex, fromAddress: address, toAddress: sendTo,
+          satoshisToSend, utxos, chain, addressFormat: fmt,
+        })
       } catch (firstErr) {
         // On mempool-conflict, retry with only unconfirmed UTXOs
         const errMsg = firstErr instanceof Error ? firstErr.message : ''
@@ -456,7 +367,10 @@ function App() {
           if (unconfirmedOnly.length === 0) {
             throw new Error('Transaction conflict - please wait for confirmations and try again')
           }
-          txid = await buildAndBroadcast(privateKey, address, sendTo, satoshisToSend, unconfirmedOnly, network)
+          txid = await buildAndBroadcastTx({
+            privateKeyHex, fromAddress: address, toAddress: sendTo,
+            satoshisToSend, utxos: unconfirmedOnly, chain, addressFormat: fmt,
+          })
         } else {
           throw firstErr
         }
@@ -467,42 +381,37 @@ function App() {
       setSendTo('')
       setSendAmount('')
 
-      // Track this tx in the ref so it survives any concurrent/future refreshes
       pendingTxRef.current.add(txid)
-
-      // Optimistically add the new tx to history immediately
       setTxHistory(prev => {
         if (prev.some(t => t.tx_hash === txid)) return prev
         return [{ tx_hash: txid, height: 0 }, ...prev]
       })
-
-      // Refresh after a short delay to let React render the optimistic entry first
-      setTimeout(() => loadWalletData(address, network), 200)
-      setTimeout(() => loadWalletData(address, network), 3000)
+      setTimeout(() => loadWalletData(address, chain), 200)
+      setTimeout(() => loadWalletData(address, chain), 3000)
     } catch (e) {
       setStatusMsg({ type: 'error', text: e instanceof Error ? e.message : 'Send failed' })
     } finally {
       setSending(false)
     }
-  }, [privateKey, sendTo, sendAmount, address, network, loadWalletData, buildAndBroadcast])
+  }, [privateKeyHex, sendTo, sendAmount, address, chain, addressFormat, loadWalletData])
 
   useEffect(() => {
     if (!address) return
     const interval = setInterval(() => {
-      loadWalletData(address, network)
+      loadWalletData(address, chain)
     }, 15000)
     return () => clearInterval(interval)
-  }, [address, network, loadWalletData])
+  }, [address, chain, loadWalletData])
 
-  if (!privateKey) {
+  if (!privateKeyHex) {
     return (
       <div className="wallet-container">
         <div className="wallet-header">
-          <h1>BSV Wallet</h1>
+          <h1>Bitcoin Wallet</h1>
         </div>
         <div className="login-screen">
           <div className="logo">&#8383;</div>
-          <h2>BSV Wallet</h2>
+          <h2>Bitcoin Wallet</h2>
           <p>ログイン方法を選択してください。</p>
 
           {/* Login method tabs */}
@@ -584,20 +493,40 @@ function App() {
           ) : (
             /* WIF Direct Login */
             <>
-              <div className="network-selector">
-                <button
-                  className={`network-btn ${network === 'mainnet' ? 'active' : ''}`}
-                  onClick={() => setNetwork('mainnet')}
-                >
-                  Mainnet
-                </button>
-                <button
-                  className={`network-btn ${network === 'testnet' ? 'active' : ''}`}
-                  onClick={() => setNetwork('testnet')}
-                >
-                  Testnet
-                </button>
+              <div className="wif-input-group">
+                <label>ネットワーク</label>
+                <div className="network-selector network-selector-grid">
+                  {(Object.keys(CHAINS) as ChainId[]).map((c) => (
+                    <button
+                      key={c}
+                      className={`network-btn ${chain === c ? 'active' : ''}`}
+                      onClick={() => setChain(c)}
+                    >
+                      {CHAINS[c].label}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {CHAINS[chain].isBtc && (
+                <div className="wif-input-group">
+                  <label>アドレス形式</label>
+                  <div className="network-selector">
+                    <button
+                      className={`network-btn ${addressFormat === 'legacy' ? 'active' : ''}`}
+                      onClick={() => setAddressFormat('legacy')}
+                    >
+                      Legacy (P2PKH)
+                    </button>
+                    <button
+                      className={`network-btn ${addressFormat === 'segwit' ? 'active' : ''}`}
+                      onClick={() => setAddressFormat('segwit')}
+                    >
+                      SegWit (Bech32)
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="wif-input-group">
                 <label>秘密鍵 (WIF)</label>
@@ -637,15 +566,72 @@ function App() {
   }
 
   const totalBalance = totalSats ?? 0
+  const info = CHAINS[chain]
 
   return (
     <div className="wallet-container">
       <div className="wallet-header">
-        <h1>BSV Wallet</h1>
-        <span className={`network-badge ${network}`}>
+        <h1>{info.symbol} Wallet</h1>
+        <span className={`network-badge ${info.isTestnet ? 'testnet' : 'mainnet'}`}>
           <span className="dot"></span>
-          {network}
+          {info.label}
         </span>
+      </div>
+
+      <div className="chain-switcher">
+        <select
+          className="chain-select"
+          value={chain}
+          onChange={(e) => {
+            const next = e.target.value as ChainId
+            if (!privateKeyHex) { setChain(next); return }
+            try {
+              const fmt: AddressFormat = CHAINS[next].isBtc ? addressFormat : 'legacy'
+              const addr = deriveAddress(privateKeyHex, next, fmt)
+              setChain(next)
+              setAddress(addr)
+              setTotalSats(null); setConfirmedSats(0); setUnconfirmedSats(0)
+              setUtxoList([]); setTxHistory([])
+              pendingTxRef.current.clear()
+              // Persist new chain selection (keep wif from current session)
+              const wif = localStorage.getItem(STORAGE_KEY_WIF)
+              if (wif) saveSession(wif, next, fmt)
+              loadWalletData(addr, next)
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Failed to switch network')
+            }
+          }}
+        >
+          {(Object.keys(CHAINS) as ChainId[]).map((c) => (
+            <option key={c} value={c}>{CHAINS[c].label}</option>
+          ))}
+        </select>
+        {info.isBtc && (
+          <select
+            className="chain-select"
+            value={addressFormat}
+            onChange={(e) => {
+              const fmt = e.target.value as AddressFormat
+              if (!privateKeyHex) { setAddressFormat(fmt); return }
+              try {
+                const addr = deriveAddress(privateKeyHex, chain, fmt)
+                setAddressFormat(fmt)
+                setAddress(addr)
+                setTotalSats(null); setConfirmedSats(0); setUnconfirmedSats(0)
+                setUtxoList([]); setTxHistory([])
+                pendingTxRef.current.clear()
+                const wif = localStorage.getItem(STORAGE_KEY_WIF)
+                if (wif) saveSession(wif, chain, fmt)
+                loadWalletData(addr, chain)
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Failed to switch address format')
+              }
+            }}
+          >
+            <option value="legacy">Legacy (P2PKH)</option>
+            <option value="segwit">SegWit (Bech32)</option>
+          </select>
+        )}
       </div>
 
       <div className="balance-card">
@@ -655,8 +641,8 @@ function App() {
         ) : (
           <>
             <div className="amount">
-              {satsToBsv(totalBalance)}
-              <span className="unit">BSV</span>
+              {satsToCoin(totalBalance)}
+              <span className="unit">{info.symbol}</span>
             </div>
             <div className="satoshis">
               {totalBalance.toLocaleString()} satoshis
@@ -724,7 +710,7 @@ function App() {
               </div>
             </div>
             <div className="form-group">
-              <label>アドレス ({network === 'testnet' ? 'Testnet' : 'Mainnet'})</label>
+              <label>アドレス ({CHAINS[chain].label})</label>
               <div className="generated-key-row">
                 <div className="generated-key-value">{newKeyAddress}</div>
                 <button
@@ -749,18 +735,18 @@ function App() {
 
       {showSend && (
         <div className="send-form">
-          <h3>BSV 送金</h3>
+          <h3>{info.symbol} 送金</h3>
           <div className="form-group">
             <label>送信先アドレス</label>
             <input
               type="text"
-              placeholder="BSVアドレスを入力..."
+              placeholder={`${info.symbol}アドレスを入力...`}
               value={sendTo}
               onChange={(e) => setSendTo(e.target.value)}
             />
           </div>
           <div className="form-group">
-            <label>金額 (BSV)</label>
+            <label>金額 ({info.symbol})</label>
             <input
               type="number"
               step="0.00000001"
@@ -794,7 +780,7 @@ function App() {
             <div key={tx.tx_hash} className="tx-item">
               <a
                 className="tx-hash"
-                href={`${EXPLORER_BASE[network]}/${tx.tx_hash}`}
+                href={explorerTxUrl(chain, tx.tx_hash)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
