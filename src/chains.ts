@@ -5,8 +5,11 @@ import * as ecc from '@bitcoinerlab/secp256k1'
 
 const ECPair = ECPairFactory(ecc)
 
-export type ChainId = 'bsv-mainnet' | 'bsv-testnet' | 'btc-mainnet' | 'btc-testnet3'
+export type ChainId = 'bsv-mainnet' | 'bsv-testnet' | 'bsv-teratestnet' | 'btc-mainnet' | 'btc-testnet3'
 export type AddressFormat = 'legacy' | 'segwit'
+
+type BsvChainId = 'bsv-mainnet' | 'bsv-testnet' | 'bsv-teratestnet'
+type BtcChainId = 'btc-mainnet' | 'btc-testnet3'
 
 export interface ChainInfo {
   id: ChainId
@@ -17,10 +20,11 @@ export interface ChainInfo {
 }
 
 export const CHAINS: Record<ChainId, ChainInfo> = {
-  'bsv-mainnet':  { id: 'bsv-mainnet',  label: 'BSV Mainnet',  symbol: 'BSV', isBtc: false, isTestnet: false },
-  'bsv-testnet':  { id: 'bsv-testnet',  label: 'BSV Testnet',  symbol: 'BSV', isBtc: false, isTestnet: true  },
-  'btc-mainnet':  { id: 'btc-mainnet',  label: 'BTC Mainnet',  symbol: 'BTC', isBtc: true,  isTestnet: false },
-  'btc-testnet3': { id: 'btc-testnet3', label: 'BTC Testnet3', symbol: 'BTC', isBtc: true,  isTestnet: true  },
+  'bsv-mainnet':     { id: 'bsv-mainnet',     label: 'BSV Mainnet',  symbol: 'BSV', isBtc: false, isTestnet: false },
+  'bsv-testnet':     { id: 'bsv-testnet',     label: 'BSV Testnet',  symbol: 'BSV', isBtc: false, isTestnet: true  },
+  'bsv-teratestnet': { id: 'bsv-teratestnet', label: 'Teratestnet',  symbol: 'BSV', isBtc: false, isTestnet: true  },
+  'btc-mainnet':     { id: 'btc-mainnet',     label: 'BTC Mainnet',  symbol: 'BTC', isBtc: true,  isTestnet: false },
+  'btc-testnet3':    { id: 'btc-testnet3',    label: 'BTC Testnet3', symbol: 'BTC', isBtc: true,  isTestnet: true  },
 }
 
 export interface UTXO {
@@ -35,21 +39,34 @@ export interface TxHistoryItem {
   height: number
 }
 
-const WOC_BASE: Record<'bsv-mainnet' | 'bsv-testnet', string> = {
-  'bsv-mainnet': 'https://api.whatsonchain.com/v1/bsv/main',
-  'bsv-testnet': 'https://api.whatsonchain.com/v1/bsv/test',
+// Teratestnet is a BSV-family shared PoW test network served by a custom
+// indexer that speaks the WhatsOnChain-compatible endpoint shape
+// (/address/{a}/unspent, /address/{a}/history, /tx/{txid}/hex, POST /tx/raw).
+// The indexer is only reachable over plain HTTP, so API calls from the
+// (HTTPS) app go through a same-origin proxy (`/tera` -> indexer) configured
+// in vercel.json for production and vite.config.ts for local dev, avoiding
+// mixed-content blocking. Explorer links use the absolute URL since a
+// top-level navigation to HTTP is not blocked.
+const TERATESTNET_INDEXER = 'http://162.43.7.61:18101'
+const TERATESTNET_API_BASE = '/tera'
+
+const BSV_BASE: Record<BsvChainId, string> = {
+  'bsv-mainnet':     'https://api.whatsonchain.com/v1/bsv/main',
+  'bsv-testnet':     'https://api.whatsonchain.com/v1/bsv/test',
+  'bsv-teratestnet': TERATESTNET_API_BASE,
 }
 
-const MEMPOOL_BASE: Record<'btc-mainnet' | 'btc-testnet3', string> = {
+const MEMPOOL_BASE: Record<BtcChainId, string> = {
   'btc-mainnet':  'https://mempool.space/api',
   'btc-testnet3': 'https://mempool.space/testnet/api',
 }
 
 const EXPLORER_TX: Record<ChainId, string> = {
-  'bsv-mainnet':  'https://whatsonchain.com/tx',
-  'bsv-testnet':  'https://test.whatsonchain.com/tx',
-  'btc-mainnet':  'https://mempool.space/tx',
-  'btc-testnet3': 'https://mempool.space/testnet/tx',
+  'bsv-mainnet':     'https://whatsonchain.com/tx',
+  'bsv-testnet':     'https://test.whatsonchain.com/tx',
+  'bsv-teratestnet': `${TERATESTNET_INDEXER}/tx`,
+  'btc-mainnet':     'https://mempool.space/tx',
+  'btc-testnet3':    'https://mempool.space/testnet/tx',
 }
 
 export function explorerTxUrl(chain: ChainId, txid: string): string {
@@ -113,7 +130,7 @@ export function generatePrivateKeyHex(): string {
 
 export async function fetchUTXOs(address: string, chain: ChainId): Promise<UTXO[]> {
   if (CHAINS[chain].isBtc) {
-    const base = MEMPOOL_BASE[chain as 'btc-mainnet' | 'btc-testnet3']
+    const base = MEMPOOL_BASE[chain as BtcChainId]
     const res = await fetch(`${base}/address/${address}/utxo`)
     if (!res.ok) return []
     const data = await res.json()
@@ -125,7 +142,7 @@ export async function fetchUTXOs(address: string, chain: ChainId): Promise<UTXO[
       height: u.status?.confirmed ? (u.status.block_height ?? 1) : 0,
     }))
   }
-  const base = WOC_BASE[chain as 'bsv-mainnet' | 'bsv-testnet']
+  const base = BSV_BASE[chain as BsvChainId]
   const res = await fetch(`${base}/address/${address}/unspent`)
   if (!res.ok) return []
   const data = await res.json()
@@ -145,7 +162,7 @@ export async function fetchBalanceFromUTXOs(address: string, chain: ChainId): Pr
 
 export async function fetchTxHistory(address: string, chain: ChainId): Promise<TxHistoryItem[]> {
   if (CHAINS[chain].isBtc) {
-    const base = MEMPOOL_BASE[chain as 'btc-mainnet' | 'btc-testnet3']
+    const base = MEMPOOL_BASE[chain as BtcChainId]
     const res = await fetch(`${base}/address/${address}/txs`)
     if (!res.ok) return []
     const data = await res.json()
@@ -155,7 +172,7 @@ export async function fetchTxHistory(address: string, chain: ChainId): Promise<T
       height: t.status?.confirmed ? (t.status.block_height ?? 1) : 0,
     }))
   }
-  const base = WOC_BASE[chain as 'bsv-mainnet' | 'bsv-testnet']
+  const base = BSV_BASE[chain as BsvChainId]
   const res = await fetch(`${base}/address/${address}/history`)
   if (!res.ok) return []
   const data = await res.json()
@@ -165,8 +182,8 @@ export async function fetchTxHistory(address: string, chain: ChainId): Promise<T
 export async function fetchRawTx(txid: string, chain: ChainId): Promise<string> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const url = CHAINS[chain].isBtc
-      ? `${MEMPOOL_BASE[chain as 'btc-mainnet' | 'btc-testnet3']}/tx/${txid}/hex`
-      : `${WOC_BASE[chain as 'bsv-mainnet' | 'bsv-testnet']}/tx/${txid}/hex`
+      ? `${MEMPOOL_BASE[chain as BtcChainId]}/tx/${txid}/hex`
+      : `${BSV_BASE[chain as BsvChainId]}/tx/${txid}/hex`
     const res = await fetch(url)
     if (res.ok) {
       const t = await res.text()
@@ -179,7 +196,7 @@ export async function fetchRawTx(txid: string, chain: ChainId): Promise<string> 
 
 export async function broadcastTx(rawHex: string, chain: ChainId): Promise<string> {
   if (CHAINS[chain].isBtc) {
-    const base = MEMPOOL_BASE[chain as 'btc-mainnet' | 'btc-testnet3']
+    const base = MEMPOOL_BASE[chain as BtcChainId]
     const res = await fetch(`${base}/tx`, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
@@ -192,7 +209,7 @@ export async function broadcastTx(rawHex: string, chain: ChainId): Promise<strin
     const txid = (await res.text()).trim()
     return txid.replace(/"/g, '')
   }
-  const base = WOC_BASE[chain as 'bsv-mainnet' | 'bsv-testnet']
+  const base = BSV_BASE[chain as BsvChainId]
   const res = await fetch(`${base}/tx/raw`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -202,15 +219,28 @@ export async function broadcastTx(rawHex: string, chain: ChainId): Promise<strin
     const errText = await res.text()
     throw new Error(`Broadcast failed: ${errText}`)
   }
-  const txid = await res.text()
-  return txid.replace(/"/g, '').trim()
+  // WhatsOnChain returns the plain-text txid; the teratestnet indexer returns
+  // JSON `{ "txid": "..." }`. Handle both.
+  const body = (await res.text()).trim()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    parsed = undefined // not JSON — treat body as the plain-text txid
+  }
+  if (parsed && typeof parsed === 'object') {
+    const obj = parsed as { txid?: unknown; error?: unknown }
+    if (typeof obj.txid === 'string') return obj.txid
+    if (typeof obj.error === 'string') throw new Error(`Broadcast failed: ${obj.error}`)
+  }
+  return body.replace(/"/g, '').trim()
 }
 
 // ---------- Fee rate (sats/vB for BTC, sats/KB for BSV) ----------
 
 async function recommendedBtcFeeRate(chain: ChainId): Promise<number> {
   try {
-    const base = MEMPOOL_BASE[chain as 'btc-mainnet' | 'btc-testnet3']
+    const base = MEMPOOL_BASE[chain as BtcChainId]
     const res = await fetch(`${base}/v1/fees/recommended`)
     if (!res.ok) throw new Error('fee fetch failed')
     const data = await res.json()
