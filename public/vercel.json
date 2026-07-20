@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/tera/:path*", "destination": "http://162.43.7.61:18101/:path*" },
+    { "source": "/:path*", "destination": "/index.html" }
+  ]
+}
