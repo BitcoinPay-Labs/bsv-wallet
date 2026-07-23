@@ -81,11 +81,17 @@ export function subscribeToAddress(opts: SubscribeOptions): SubscriptionHandle {
 
   const s = socket
 
+  // Register topic listeners once. `connect` may fire repeatedly (initial
+  // connect + every reconnect); registering listeners there would stack
+  // duplicate handlers and fire onEvent multiple times per event.
+  s.on(lockTopic, (raw: unknown) => onEvent(parse('lock', raw)))
+  s.on(spentTopic, (raw: unknown) => onEvent(parse('spent', raw)))
+
+  // (Re)subscribe on every (re)connect: room membership is per-connection,
+  // so a reconnect needs the subscribe messages re-sent.
   s.on('connect', () => {
     onConnectionChange?.(true)
     for (const t of topics) s.emit('subscribe', t)
-    s.on(lockTopic, (raw: unknown) => onEvent(parse('lock', raw)))
-    s.on(spentTopic, (raw: unknown) => onEvent(parse('spent', raw)))
   })
 
   s.on('disconnect', () => onConnectionChange?.(false))
