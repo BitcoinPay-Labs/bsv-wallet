@@ -1,4 +1,4 @@
-import { PrivateKey as BsvPrivateKey, P2PKH, Transaction as BsvTransaction, SatoshisPerKilobyte } from '@bsv/sdk'
+import { PrivateKey as BsvPrivateKey, P2PKH, Transaction as BsvTransaction, SatoshisPerKilobyte, LockingScript } from '@bsv/sdk'
 import * as bitcoin from 'bitcoinjs-lib'
 import { ECPairFactory } from 'ecpair'
 import * as ecc from '@bitcoinerlab/secp256k1'
@@ -32,6 +32,7 @@ export interface UTXO {
   tx_pos: number
   value: number
   height: number
+  script?: string
 }
 
 export interface TxHistoryItem {
@@ -146,7 +147,14 @@ export async function fetchUTXOs(address: string, chain: ChainId): Promise<UTXO[
   const res = await fetch(`${base}/address/${address}/unspent`)
   if (!res.ok) return []
   const data = await res.json()
-  return Array.isArray(data) ? data : []
+  if (!Array.isArray(data)) return []
+  return data.map((u: { tx_hash: string; tx_pos: number; value: number; height?: number | null; script?: string }) => ({
+    tx_hash: u.tx_hash,
+    tx_pos: u.tx_pos,
+    value: u.value,
+    height: typeof u.height === 'number' ? u.height : 0,
+    script: typeof u.script === 'string' ? u.script : undefined,
+  }))
 }
 
 export async function fetchBalanceFromUTXOs(address: string, chain: ChainId): Promise<{ total: number; confirmed: number; unconfirmed: number; utxos: UTXO[] }> {
@@ -192,6 +200,31 @@ export async function fetchRawTx(txid: string, chain: ChainId): Promise<string> 
     if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
   }
   throw new Error(`Failed to fetch tx ${txid}`)
+}
+
+// Build the source transaction that @bsv/sdk needs to know each input's
+// satoshis and locking script when signing (BIP143). When the indexer's
+// /unspent already provides the locking script + value (Teratestnet), we
+// synthesize a minimal source tx from it and pass the real sourceTXID so the
+// outpoint stays correct. This avoids fetching + parsing the funding tx,
+// which for Teratestnet is served in extended (EF) format that
+// BsvTransaction.fromHex mis-parses (and coinbase EF txs cannot be parsed at
+// all). For WhatsOnChain (no script in /unspent) we fetch the raw source tx.
+async function bsvSourceTransaction(u: UTXO, chain: ChainId): Promise<BsvTransaction> {
+  if (u.script) {
+    const src = new BsvTransaction()
+    const outputs = []
+    for (let i = 0; i <= u.tx_pos; i++) {
+      outputs.push(
+        i === u.tx_pos
+          ? { satoshis: u.value, lockingScript: LockingScript.fromHex(u.script) }
+          : { satoshis: 0, lockingScript: new LockingScript() },
+      )
+    }
+    src.outputs = outputs
+    return src
+  }
+  return BsvTransaction.fromHex(await fetchRawTx(u.tx_hash, chain))
 }
 
 export async function broadcastTx(rawHex: string, chain: ChainId): Promise<string> {
@@ -300,10 +333,10 @@ async function buildAndBroadcastBsv(opts: {
   }
 
   for (const u of used) {
-    const rawHex = await fetchRawTx(u.tx_hash, chain)
-    const sourceTransaction = BsvTransaction.fromHex(rawHex)
+    const sourceTransaction = await bsvSourceTransaction(u, chain)
     tx.addInput({
       sourceTransaction,
+      sourceTXID: u.tx_hash,
       sourceOutputIndex: u.tx_pos,
       unlockingScriptTemplate: new P2PKH().unlock(pk),
     })
