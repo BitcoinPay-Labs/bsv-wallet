@@ -124,6 +124,11 @@ function App() {
   // Whether the realtime push channel is currently connected (drives polling cadence)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Incoming-payment popup: shown the moment funds arrive (via the realtime
+  // lock-address event). Deduped by txid so we notify once per incoming tx.
+  const [incomingToast, setIncomingToast] = useState<{ amount: number; unconfirmed: boolean } | null>(null)
+  const notifiedTxRef = useRef<Set<string>>(new Set())
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const loadWalletData = useCallback(async (addr: string, c: ChainId) => {
     setLoading(true)
@@ -407,19 +412,55 @@ function App() {
       setRealtimeConnected(false)
       return
     }
+    // Reset per-address notification dedup when switching accounts/networks.
+    notifiedTxRef.current = new Set()
+    const symbol = CHAINS[chain].symbol
     const sub = subscribeToAddress({
       address,
-      onUpdate: () => {
+      onEvent: (event) => {
+        // Any change triggers a debounced refetch.
         if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
         realtimeDebounceRef.current = setTimeout(() => loadWalletData(address, chain), 200)
+
+        // Popup only for genuine incoming payments: 'lock' events whose txid is
+        // not one we just broadcast ourselves (our own change output also emits
+        // a lock event with the send txid). Dedup so each incoming tx pops once.
+        if (event.type !== 'lock') return
+        const txid = event.txid
+        if (txid && pendingTxRef.current.has(txid)) return
+        if (txid && notifiedTxRef.current.has(txid)) return
+        if (txid) notifiedTxRef.current.add(txid)
+
+        const amount = (event.value ?? 0) / 1e8
+        setIncomingToast({ amount, unconfirmed: event.unconfirmed !== false })
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+        toastTimerRef.current = setTimeout(() => setIncomingToast(null), 10000)
+
+        // System-level popup (works in PWA / background) when permitted.
+        try {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            new Notification('着金しました', {
+              body: `+${amount.toFixed(8)} ${symbol}${event.unconfirmed !== false ? '（未確認）' : ''}`,
+            })
+          }
+        } catch { /* ignore */ }
       },
       onConnectionChange: (connected) => {
         setRealtimeConnected(connected)
-        if (connected) loadWalletData(address, chain)
+        if (connected) {
+          loadWalletData(address, chain)
+          // Ask for OS notification permission once so background popups can fire.
+          try {
+            if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+              Notification.requestPermission().catch(() => {})
+            }
+          } catch { /* ignore */ }
+        }
       },
     })
     return () => {
       if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       sub.close()
     }
   }, [address, chain, loadWalletData])
@@ -602,6 +643,18 @@ function App() {
 
   return (
     <div className="wallet-container">
+      {incomingToast && (
+        <div className="incoming-toast" role="status" onClick={() => setIncomingToast(null)}>
+          <span className="incoming-toast-icon">↓</span>
+          <div className="incoming-toast-body">
+            <div className="incoming-toast-title">着金しました</div>
+            <div className="incoming-toast-amount">
+              +{incomingToast.amount.toFixed(8)} {info.symbol}
+              {incomingToast.unconfirmed ? '（未確認）' : ''}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="wallet-header">
         <h1>{info.symbol} Wallet</h1>
         <span className={`network-badge ${info.isTestnet ? 'testnet' : 'mainnet'}`}>

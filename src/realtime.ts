@@ -25,10 +25,20 @@ export interface SubscriptionHandle {
   close: () => void
 }
 
+export interface AddressEvent {
+  // 'lock' = the address received funds (appears in a tx output).
+  // 'spent' = a UTXO of the address was spent (appears in a tx input).
+  type: 'lock' | 'spent'
+  txid?: string
+  // For 'lock' events: satoshis paid to the address in this output.
+  value?: number
+  unconfirmed?: boolean
+}
+
 interface SubscribeOptions {
   address: string
   // Called whenever the subscribed address changes on-chain (incoming/outgoing).
-  onUpdate: () => void
+  onEvent: (event: AddressEvent) => void
   // Called when the socket connects / disconnects, so callers can adjust
   // their polling fallback cadence.
   onConnectionChange?: (connected: boolean) => void
@@ -39,8 +49,22 @@ interface SubscribeOptions {
 // tears everything down. Never throws: on any failure the caller's polling
 // fallback keeps the wallet working.
 export function subscribeToAddress(opts: SubscribeOptions): SubscriptionHandle {
-  const { address, onUpdate, onConnectionChange } = opts
-  const topics = [`lock-address-${address}`, `spent-address-${address}`]
+  const { address, onEvent, onConnectionChange } = opts
+  const lockTopic = `lock-address-${address}`
+  const spentTopic = `spent-address-${address}`
+  const topics = [lockTopic, spentTopic]
+
+  const parse = (type: 'lock' | 'spent', raw: unknown): AddressEvent => {
+    const p = (raw && typeof raw === 'object' ? raw : {}) as {
+      txid?: unknown; value?: unknown; unconfirmed?: unknown
+    }
+    return {
+      type,
+      txid: typeof p.txid === 'string' ? p.txid : undefined,
+      value: typeof p.value === 'number' ? p.value : undefined,
+      unconfirmed: typeof p.unconfirmed === 'boolean' ? p.unconfirmed : undefined,
+    }
+  }
 
   let socket: Socket | null = null
   try {
@@ -59,10 +83,9 @@ export function subscribeToAddress(opts: SubscribeOptions): SubscriptionHandle {
 
   s.on('connect', () => {
     onConnectionChange?.(true)
-    for (const t of topics) {
-      s.emit('subscribe', t)
-      s.on(t, onUpdate)
-    }
+    for (const t of topics) s.emit('subscribe', t)
+    s.on(lockTopic, (raw: unknown) => onEvent(parse('lock', raw)))
+    s.on(spentTopic, (raw: unknown) => onEvent(parse('spent', raw)))
   })
 
   s.on('disconnect', () => onConnectionChange?.(false))
