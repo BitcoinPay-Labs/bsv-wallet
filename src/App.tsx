@@ -18,6 +18,7 @@ import {
   buildAndBroadcastTx,
   explorerTxUrl,
 } from './chains'
+import { subscribeToAddress, chainSupportsRealtime } from './realtime'
 
 type LoginMethod = 'wif' | 'email'
 
@@ -120,6 +121,9 @@ function App() {
 
   // Ref to track optimistic tx hashes that must survive API refreshes
   const pendingTxRef = useRef<Set<string>>(new Set())
+  // Whether the realtime push channel is currently connected (drives polling cadence)
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const loadWalletData = useCallback(async (addr: string, c: ChainId) => {
     setLoading(true)
@@ -395,13 +399,41 @@ function App() {
     }
   }, [privateKeyHex, sendTo, sendAmount, address, chain, addressFormat, loadWalletData])
 
+  // Realtime push subscription (Teratestnet only). On any incoming/outgoing
+  // change the indexer notifies us; we debounce and refetch. Falls back to
+  // polling (below) whenever the socket is not connected.
+  useEffect(() => {
+    if (!address || !chainSupportsRealtime(chain)) {
+      setRealtimeConnected(false)
+      return
+    }
+    const sub = subscribeToAddress({
+      address,
+      onUpdate: () => {
+        if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
+        realtimeDebounceRef.current = setTimeout(() => loadWalletData(address, chain), 200)
+      },
+      onConnectionChange: (connected) => {
+        setRealtimeConnected(connected)
+        if (connected) loadWalletData(address, chain)
+      },
+    })
+    return () => {
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
+      sub.close()
+    }
+  }, [address, chain, loadWalletData])
+
+  // Polling fallback: fast (15s) when there is no realtime channel, slow (60s)
+  // as a safety net while the push channel is connected.
   useEffect(() => {
     if (!address) return
+    const intervalMs = realtimeConnected ? 60000 : 15000
     const interval = setInterval(() => {
       loadWalletData(address, chain)
-    }, 15000)
+    }, intervalMs)
     return () => clearInterval(interval)
-  }, [address, chain, loadWalletData])
+  }, [address, chain, loadWalletData, realtimeConnected])
 
   if (!privateKeyHex) {
     return (
