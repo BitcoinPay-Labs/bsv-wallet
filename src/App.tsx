@@ -78,8 +78,6 @@ function App() {
   const [privateKeyHex, setPrivateKeyHex] = useState<string | null>(null)
   const [address, setAddress] = useState('')
   const [totalSats, setTotalSats] = useState<number | null>(null)
-  const [confirmedSats, setConfirmedSats] = useState(0)
-  const [unconfirmedSats, setUnconfirmedSats] = useState(0)
   const [utxoList, setUtxoList] = useState<UTXO[]>([])
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -118,8 +116,6 @@ function App() {
         fetchTxHistory(addr, c),
       ])
       setTotalSats(utxoData.total)
-      setConfirmedSats(utxoData.confirmed)
-      setUnconfirmedSats(utxoData.unconfirmed)
       setUtxoList(utxoData.utxos)
       // Build history from UTXOs if the history endpoint returned nothing
       let apiHistory: TxHistoryItem[]
@@ -268,8 +264,6 @@ function App() {
     setPrivateKeyHex(null)
     setAddress('')
     setTotalSats(null)
-    setConfirmedSats(0)
-    setUnconfirmedSats(0)
     setUtxoList([])
     setTxHistory([])
     setWifInput('')
@@ -553,7 +547,7 @@ function App() {
               const addr = deriveAddress(privateKeyHex, next, fmt)
               setChain(next)
               setAddress(addr)
-              setTotalSats(null); setConfirmedSats(0); setUnconfirmedSats(0)
+              setTotalSats(null)
               setUtxoList([]); setTxHistory([])
               pendingTxRef.current.clear()
               // Persist new chain selection (keep wif from current session)
@@ -580,7 +574,7 @@ function App() {
                 const addr = deriveAddress(privateKeyHex, chain, fmt)
                 setAddressFormat(fmt)
                 setAddress(addr)
-                setTotalSats(null); setConfirmedSats(0); setUnconfirmedSats(0)
+                setTotalSats(null)
                 setUtxoList([]); setTxHistory([])
                 pendingTxRef.current.clear()
                 const wif = localStorage.getItem(STORAGE_KEY_WIF)
@@ -613,11 +607,6 @@ function App() {
                 <span> ({utxoList.length} UTXO{utxoList.length > 1 ? 's' : ''})</span>
               )}
             </div>
-            {unconfirmedSats > 0 && (
-              <div className="unconfirmed-badge">
-                確認済: {confirmedSats.toLocaleString()} sat / 未確認: {unconfirmedSats.toLocaleString()} sat
-              </div>
-            )}
           </>
         )}
       </div>
@@ -758,7 +747,7 @@ function App() {
                 {tx.tx_hash.slice(0, 8)}...{tx.tx_hash.slice(-8)}
               </a>
               <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-                {tx.height > 0 ? `Block #${tx.height}` : 'Unconfirmed'}
+                {tx.height > 0 ? `Block #${tx.height}` : ''}
               </span>
             </div>
           ))
