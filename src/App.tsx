@@ -362,11 +362,19 @@ function App() {
       }
 
       const fmt: AddressFormat = CHAINS[chain].isBtc ? addressFormat : 'legacy'
+      // Register the txid BEFORE broadcasting: the indexer's realtime push for
+      // our own change output can beat the broadcast HTTP response, so adding
+      // it only after the await would let the change pop up as a fake receipt.
+      const registerTxid = (id: string) => {
+        pendingTxRef.current.add(id)
+        notifiedTxRef.current.add(id)
+      }
       let txid: string
       try {
         txid = await buildAndBroadcastTx({
           privateKeyHex, fromAddress: address, toAddress: sendTo,
           satoshisToSend, utxos, chain, addressFormat: fmt,
+          onTxidReady: registerTxid,
         })
       } catch (firstErr) {
         // On mempool-conflict, retry with only unconfirmed UTXOs
@@ -379,6 +387,7 @@ function App() {
           txid = await buildAndBroadcastTx({
             privateKeyHex, fromAddress: address, toAddress: sendTo,
             satoshisToSend, utxos: unconfirmedOnly, chain, addressFormat: fmt,
+            onTxidReady: registerTxid,
           })
         } else {
           throw firstErr
@@ -389,6 +398,18 @@ function App() {
       setShowSend(false)
       setSendTo('')
       setSendAmount('')
+
+      // Sender-side popup: the sent amount as a negative number.
+      setIncomingToast({ amount: -satoshisToSend / 1e8, unconfirmed: true })
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+      toastTimerRef.current = setTimeout(() => setIncomingToast(null), 10000)
+      try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification('送金しました', {
+            body: `-${(satoshisToSend / 1e8).toFixed(8)} ${CHAINS[chain].symbol}`,
+          })
+        }
+      } catch { /* ignore */ }
 
       pendingTxRef.current.add(txid)
       setTxHistory(prev => {
@@ -645,11 +666,11 @@ function App() {
     <div className="wallet-container">
       {incomingToast && (
         <div className="incoming-toast" role="status" onClick={() => setIncomingToast(null)}>
-          <span className="incoming-toast-icon">↓</span>
+          <span className="incoming-toast-icon">{incomingToast.amount < 0 ? '↑' : '↓'}</span>
           <div className="incoming-toast-body">
-            <div className="incoming-toast-title">着金しました</div>
+            <div className="incoming-toast-title">{incomingToast.amount < 0 ? '送金しました' : '着金しました'}</div>
             <div className="incoming-toast-amount">
-              +{incomingToast.amount.toFixed(8)} {info.symbol}
+              {incomingToast.amount < 0 ? '' : '+'}{incomingToast.amount.toFixed(8)} {info.symbol}
             </div>
           </div>
         </div>
