@@ -43,13 +43,10 @@ export interface TxHistoryItem {
 // Teratestnet is a BSV-family shared PoW test network served by a custom
 // indexer that speaks the WhatsOnChain-compatible endpoint shape
 // (/address/{a}/unspent, /address/{a}/history, /tx/{txid}/hex, POST /tx/raw).
-// The indexer is only reachable over plain HTTP, so API calls from the
-// (HTTPS) app go through a same-origin proxy (`/tera` -> indexer) configured
-// in vercel.json for production and vite.config.ts for local dev, avoiding
-// mixed-content blocking. Explorer links use the absolute URL since a
-// top-level navigation to HTTP is not blocked.
-const TERATESTNET_INDEXER = 'http://162.43.7.61:18101'
-const TERATESTNET_API_BASE = '/tera'
+// The indexer is exposed over HTTPS at https://ttn.btcp.io/api (Caddy
+// reverse-proxies /api/* to the indexer on the same host that serves the
+// Socket.IO endpoint), with permissive CORS, so the app calls it directly.
+const TERATESTNET_API_BASE = 'https://ttn.btcp.io/api'
 
 const BSV_BASE: Record<BsvChainId, string> = {
   'bsv-mainnet':     'https://api.whatsonchain.com/v1/bsv/main',
@@ -65,7 +62,7 @@ const MEMPOOL_BASE: Record<BtcChainId, string> = {
 const EXPLORER_TX: Record<ChainId, string> = {
   'bsv-mainnet':     'https://whatsonchain.com/tx',
   'bsv-testnet':     'https://test.whatsonchain.com/tx',
-  'bsv-teratestnet': `${TERATESTNET_INDEXER}/tx`,
+  'bsv-teratestnet': `${TERATESTNET_API_BASE}/tx`,
   'btc-mainnet':     'https://mempool.space/tx',
   'btc-testnet3':    'https://mempool.space/testnet/tx',
 }
