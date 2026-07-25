@@ -108,6 +108,8 @@ function App() {
   const [newKeyWif, setNewKeyWif] = useState('')
   const [newKeyAddress, setNewKeyAddress] = useState('')
   const [newKeyCopied, setNewKeyCopied] = useState<'wif' | 'addr' | null>(null)
+  const [keyRevealed, setKeyRevealed] = useState(false)
+  const keyPanelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Privy email login state
   const [emailInput, setEmailInput] = useState('')
@@ -221,16 +223,29 @@ function App() {
     setWifInput(wif)
   }, [chain])
 
-  const handleGenerateNewKey = useCallback(() => {
-    const hex = generatePrivateKeyHex()
-    const wif = privateKeyHexToWif(hex, chain)
-    const fmt: AddressFormat = CHAINS[chain].isBtc ? addressFormat : 'legacy'
-    const addr = deriveAddress(hex, chain, fmt)
+  // Show the WIF of the wallet currently logged in (not a new key). The WIF
+  // is derived on demand, rendered masked until explicitly revealed, and the
+  // panel auto-closes after 30 seconds so the key isn't left on screen.
+  const closeKeyPanel = useCallback(() => {
+    if (keyPanelTimerRef.current) clearTimeout(keyPanelTimerRef.current)
+    keyPanelTimerRef.current = null
+    setShowGenerate(false)
+    setNewKeyWif('')
+    setNewKeyAddress('')
+    setKeyRevealed(false)
+  }, [])
+
+  const handleShowCurrentKey = useCallback(() => {
+    if (!privateKeyHex) return
+    const wif = privateKeyHexToWif(privateKeyHex, chain)
     setNewKeyWif(wif)
-    setNewKeyAddress(addr)
+    setNewKeyAddress(address)
     setShowGenerate(true)
     setNewKeyCopied(null)
-  }, [chain, addressFormat])
+    setKeyRevealed(false)
+    if (keyPanelTimerRef.current) clearTimeout(keyPanelTimerRef.current)
+    keyPanelTimerRef.current = setTimeout(closeKeyPanel, 30000)
+  }, [privateKeyHex, chain, address, closeKeyPanel])
 
   const handleCopyNewKey = useCallback(async (text: string, type: 'wif' | 'addr') => {
     try {
@@ -784,8 +799,8 @@ function App() {
         <button className="action-btn send" onClick={() => setShowSend(!showSend)}>
           {showSend ? 'X Close' : 'Send'}
         </button>
-        <button className="action-btn generate" onClick={handleGenerateNewKey}>
-          Generate Key
+        <button className="action-btn generate" onClick={showGenerate ? closeKeyPanel : handleShowCurrentKey}>
+          {showGenerate ? 'X Close' : 'Show Key'}
         </button>
         <button className="action-btn refresh" onClick={handleRefresh} disabled={loading}>
           {loading ? <span className="spinner"></span> : null} Refresh
@@ -803,12 +818,20 @@ function App() {
 
       {showGenerate && newKeyWif && (
         <div className="send-form">
-          <h3>新しい秘密鍵を生成しました</h3>
+          <h3>ログイン中のウォレットの秘密鍵</h3>
           <div className="generated-key-section">
             <div className="form-group">
               <label>秘密鍵 (WIF)</label>
               <div className="generated-key-row">
-                <div className="generated-key-value">{newKeyWif}</div>
+                <div className="generated-key-value">
+                  {keyRevealed ? newKeyWif : '•'.repeat(24)}
+                </div>
+                <button
+                  className="copy-btn"
+                  onClick={() => setKeyRevealed(!keyRevealed)}
+                >
+                  {keyRevealed ? '隠す' : '表示'}
+                </button>
                 <button
                   className={`copy-btn ${newKeyCopied === 'wif' ? 'copied' : ''}`}
                   onClick={() => handleCopyNewKey(newKeyWif, 'wif')}
@@ -830,10 +853,10 @@ function App() {
               </div>
             </div>
             <div className="status-msg info" style={{ marginTop: '12px' }}>
-              Warning: この秘密鍵を安全な場所に保存してください。一度閉じると再表示できません。
+              Warning: この秘密鍵はこのウォレットの全資産にアクセスできます。誰にも共有せず、画面を覗かれない場所で扱ってください。パネルは30秒で自動的に閉じます。
             </div>
             <div className="form-buttons">
-              <button className="cancel-btn" onClick={() => { setShowGenerate(false); setNewKeyWif(''); setNewKeyAddress(''); }}>
+              <button className="cancel-btn" onClick={closeKeyPanel}>
                 閉じる
               </button>
             </div>
