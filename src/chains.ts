@@ -62,7 +62,8 @@ const MEMPOOL_BASE: Record<BtcChainId, string> = {
 const EXPLORER_TX: Record<ChainId, string> = {
   'bsv-mainnet':     'https://whatsonchain.com/tx',
   'bsv-testnet':     'https://test.whatsonchain.com/tx',
-  'bsv-teratestnet': `${TERATESTNET_API_BASE}/tx`,
+  // Teranode Explorer (hash-router SPA): https://e.btcp.io/#/tx/{txid}
+  'bsv-teratestnet': 'https://e.btcp.io/#/tx',
   'btc-mainnet':     'https://mempool.space/tx',
   'btc-testnet3':    'https://mempool.space/testnet/tx',
 }
