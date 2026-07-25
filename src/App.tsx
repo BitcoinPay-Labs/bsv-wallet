@@ -274,6 +274,9 @@ function App() {
     setShowGenerate(false)
     setNewKeyWif('')
     setNewKeyAddress('')
+    // The login screen has no network selector: it always logs into Teratestnet.
+    setChain('bsv-teratestnet')
+    setAddressFormat('legacy')
   }, [])
 
   const handleSend = useCallback(async () => {
@@ -440,41 +443,6 @@ function App() {
           <div className="logo">&#8383;</div>
           <h2>Bitcoin Wallet</h2>
           <p>WIF形式の秘密鍵でログインしてください。</p>
-
-          <div className="wif-input-group">
-            <label>ネットワーク</label>
-            <div className="network-selector network-selector-grid">
-              {(Object.keys(CHAINS) as ChainId[]).map((c) => (
-                <button
-                  key={c}
-                  className={`network-btn ${chain === c ? 'active' : ''}`}
-                  onClick={() => setChain(c)}
-                >
-                  {CHAINS[c].label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {CHAINS[chain].isBtc && (
-            <div className="wif-input-group">
-              <label>アドレス形式</label>
-              <div className="network-selector">
-                <button
-                  className={`network-btn ${addressFormat === 'legacy' ? 'active' : ''}`}
-                  onClick={() => setAddressFormat('legacy')}
-                >
-                  Legacy (P2PKH)
-                </button>
-                <button
-                  className={`network-btn ${addressFormat === 'segwit' ? 'active' : ''}`}
-                  onClick={() => setAddressFormat('segwit')}
-                >
-                  SegWit (Bech32)
-                </button>
-              </div>
-            </div>
-          )}
 
           <div className="wif-input-group">
             <label>秘密鍵 (WIF)</label>
