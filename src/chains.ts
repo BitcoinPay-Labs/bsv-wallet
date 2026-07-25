@@ -292,13 +292,17 @@ export async function buildAndBroadcastTx(opts: {
   utxos: UTXO[]
   chain: ChainId
   addressFormat: AddressFormat
+  // Called with the txid after signing but BEFORE broadcasting, so callers can
+  // register it for change-output suppression ahead of any realtime event
+  // (the indexer's push can arrive before the broadcast HTTP response).
+  onTxidReady?: (txid: string) => void
 }): Promise<string> {
-  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat } = opts
+  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
 
   if (CHAINS[chain].isBtc) {
-    return buildAndBroadcastBtc({ privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat })
+    return buildAndBroadcastBtc({ privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady })
   }
-  return buildAndBroadcastBsv({ privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain })
+  return buildAndBroadcastBsv({ privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, onTxidReady })
 }
 
 async function buildAndBroadcastBsv(opts: {
@@ -308,8 +312,9 @@ async function buildAndBroadcastBsv(opts: {
   satoshisToSend: number
   utxos: UTXO[]
   chain: ChainId
+  onTxidReady?: (txid: string) => void
 }): Promise<string> {
-  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain } = opts
+  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, onTxidReady } = opts
   const pk = new BsvPrivateKey(privateKeyHex, 16)
   const tx = new BsvTransaction()
 
@@ -350,6 +355,7 @@ async function buildAndBroadcastBsv(opts: {
 
   await tx.fee(new SatoshisPerKilobyte(1))
   await tx.sign()
+  onTxidReady?.(tx.id('hex'))
   return broadcastTx(tx.toHex(), chain)
 }
 
@@ -361,8 +367,9 @@ async function buildAndBroadcastBtc(opts: {
   utxos: UTXO[]
   chain: ChainId
   addressFormat: AddressFormat
+  onTxidReady?: (txid: string) => void
 }): Promise<string> {
-  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat } = opts
+  const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
   const network = btcNetwork(chain)
   const keyPair = ECPair.fromPrivateKey(Buffer.from(privateKeyHex, 'hex'), { network, compressed: true })
   const pubkey = Buffer.from(keyPair.publicKey)
@@ -442,6 +449,7 @@ async function buildAndBroadcastBtc(opts: {
     psbt.signInput(i, signer)
   }
   psbt.finalizeAllInputs()
-  const rawHex = psbt.extractTransaction().toHex()
-  return broadcastTx(rawHex, chain)
+  const finalTx = psbt.extractTransaction()
+  onTxidReady?.(finalTx.getId())
+  return broadcastTx(finalTx.toHex(), chain)
 }
