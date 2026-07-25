@@ -436,9 +436,6 @@ function App() {
   if (!privateKeyHex) {
     return (
       <div className="wallet-container">
-        <div className="wallet-header">
-          <h1>Bitcoin Wallet</h1>
-        </div>
         <div className="login-screen">
           <div className="logo">&#8383;</div>
           <h2>Bitcoin Wallet</h2>
