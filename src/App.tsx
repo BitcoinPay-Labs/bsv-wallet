@@ -492,14 +492,6 @@ function App() {
           </div>
         </div>
       )}
-      <div className="wallet-header">
-        <h1>{info.symbol} Wallet</h1>
-        <span className={`network-badge ${info.isTestnet ? 'testnet' : 'mainnet'}`}>
-          <span className="dot"></span>
-          {info.label}
-        </span>
-      </div>
-
       <div className="chain-switcher">
         <select
           className="chain-select"

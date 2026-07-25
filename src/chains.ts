@@ -22,7 +22,9 @@ export interface ChainInfo {
 export const CHAINS: Record<ChainId, ChainInfo> = {
   'bsv-mainnet':     { id: 'bsv-mainnet',     label: 'BSV Mainnet',  symbol: 'BSV', isBtc: false, isTestnet: false },
   'bsv-testnet':     { id: 'bsv-testnet',     label: 'BSV Testnet',  symbol: 'BSV', isBtc: false, isTestnet: true  },
-  'bsv-teratestnet': { id: 'bsv-teratestnet', label: 'Teratestnet',  symbol: 'BSV', isBtc: false, isTestnet: true  },
+  // Display symbol is BTC by request; the chain itself is BSV-family (isBtc
+  // stays false so tx building keeps using the BSV path).
+  'bsv-teratestnet': { id: 'bsv-teratestnet', label: 'Teratestnet',  symbol: 'BTC', isBtc: false, isTestnet: true  },
   'btc-mainnet':     { id: 'btc-mainnet',     label: 'BTC Mainnet',  symbol: 'BTC', isBtc: true,  isTestnet: false },
   'btc-testnet3':    { id: 'btc-testnet3',    label: 'BTC Testnet3', symbol: 'BTC', isBtc: true,  isTestnet: true  },
 }
