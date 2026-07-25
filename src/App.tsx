@@ -440,7 +440,7 @@ function App() {
         try {
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             new Notification('着金しました', {
-              body: `+${amount.toFixed(8)} ${symbol}${event.unconfirmed !== false ? '（未確認）' : ''}`,
+              body: `+${amount.toFixed(8)} ${symbol}`,
             })
           }
         } catch { /* ignore */ }
@@ -650,7 +650,6 @@ function App() {
             <div className="incoming-toast-title">着金しました</div>
             <div className="incoming-toast-amount">
               +{incomingToast.amount.toFixed(8)} {info.symbol}
-              {incomingToast.unconfirmed ? '（未確認）' : ''}
             </div>
           </div>
         </div>
