@@ -296,7 +296,7 @@ export async function buildAndBroadcastTx(opts: {
   // register it for change-output suppression ahead of any realtime event
   // (the indexer's push can arrive before the broadcast HTTP response).
   onTxidReady?: (txid: string) => void
-}): Promise<string> {
+}): Promise<{ txid: string; feeSats: number }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
 
   if (CHAINS[chain].isBtc) {
@@ -313,7 +313,7 @@ async function buildAndBroadcastBsv(opts: {
   utxos: UTXO[]
   chain: ChainId
   onTxidReady?: (txid: string) => void
-}): Promise<string> {
+}): Promise<{ txid: string; feeSats: number }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, onTxidReady } = opts
   const pk = new BsvPrivateKey(privateKeyHex, 16)
   const tx = new BsvTransaction()
@@ -356,7 +356,11 @@ async function buildAndBroadcastBsv(opts: {
   await tx.fee(new SatoshisPerKilobyte(1))
   await tx.sign()
   onTxidReady?.(tx.id('hex'))
-  return broadcastTx(tx.toHex(), chain)
+  // Actual fee = inputs − outputs (the change output was sized by tx.fee()).
+  const outputTotal = tx.outputs.reduce((sum, o) => sum + (o.satoshis ?? 0), 0)
+  const feeSats = totalInput - outputTotal
+  const txid = await broadcastTx(tx.toHex(), chain)
+  return { txid, feeSats }
 }
 
 async function buildAndBroadcastBtc(opts: {
@@ -368,7 +372,7 @@ async function buildAndBroadcastBtc(opts: {
   chain: ChainId
   addressFormat: AddressFormat
   onTxidReady?: (txid: string) => void
-}): Promise<string> {
+}): Promise<{ txid: string; feeSats: number }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
   const network = btcNetwork(chain)
   const keyPair = ECPair.fromPrivateKey(Buffer.from(privateKeyHex, 'hex'), { network, compressed: true })
@@ -451,5 +455,9 @@ async function buildAndBroadcastBtc(opts: {
   psbt.finalizeAllInputs()
   const finalTx = psbt.extractTransaction()
   onTxidReady?.(finalTx.getId())
-  return broadcastTx(finalTx.toHex(), chain)
+  // Actual fee = inputs − outputs (covers the dust-rolled-into-fee case too).
+  const outputTotal = finalTx.outs.reduce((sum, o) => sum + Number(o.value), 0)
+  const feeSats = totalInput - outputTotal
+  const txid = await broadcastTx(finalTx.toHex(), chain)
+  return { txid, feeSats }
 }

@@ -126,7 +126,7 @@ function App() {
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Incoming-payment popup: shown the moment funds arrive (via the realtime
   // lock-address event). Deduped by txid so we notify once per incoming tx.
-  const [incomingToast, setIncomingToast] = useState<{ amount: number; unconfirmed: boolean } | null>(null)
+  const [incomingToast, setIncomingToast] = useState<{ amount: number; unconfirmed: boolean; feeSats?: number } | null>(null)
   const notifiedTxRef = useRef<Set<string>>(new Set())
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -370,12 +370,13 @@ function App() {
         notifiedTxRef.current.add(id)
       }
       let txid: string
+      let feeSats: number
       try {
-        txid = await buildAndBroadcastTx({
+        ({ txid, feeSats } = await buildAndBroadcastTx({
           privateKeyHex, fromAddress: address, toAddress: sendTo,
           satoshisToSend, utxos, chain, addressFormat: fmt,
           onTxidReady: registerTxid,
-        })
+        }))
       } catch (firstErr) {
         // On mempool-conflict, retry with only unconfirmed UTXOs
         const errMsg = firstErr instanceof Error ? firstErr.message : ''
@@ -384,11 +385,11 @@ function App() {
           if (unconfirmedOnly.length === 0) {
             throw new Error('Transaction conflict - please wait for confirmations and try again')
           }
-          txid = await buildAndBroadcastTx({
+          ;({ txid, feeSats } = await buildAndBroadcastTx({
             privateKeyHex, fromAddress: address, toAddress: sendTo,
             satoshisToSend, utxos: unconfirmedOnly, chain, addressFormat: fmt,
             onTxidReady: registerTxid,
-          })
+          }))
         } else {
           throw firstErr
         }
@@ -399,14 +400,14 @@ function App() {
       setSendTo('')
       setSendAmount('')
 
-      // Sender-side popup: the sent amount as a negative number.
-      setIncomingToast({ amount: -satoshisToSend / 1e8, unconfirmed: true })
+      // Sender-side popup: the sent amount as a negative number, plus the fee.
+      setIncomingToast({ amount: -satoshisToSend / 1e8, unconfirmed: true, feeSats })
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       toastTimerRef.current = setTimeout(() => setIncomingToast(null), 10000)
       try {
         if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
           new Notification('送金しました', {
-            body: `-${(satoshisToSend / 1e8).toFixed(8)} ${CHAINS[chain].symbol}`,
+            body: `-${(satoshisToSend / 1e8).toFixed(8)} ${CHAINS[chain].symbol}（手数料 ${(feeSats / 1e8).toFixed(8)} ${CHAINS[chain].symbol}）`,
           })
         }
       } catch { /* ignore */ }
@@ -671,6 +672,8 @@ function App() {
             <div className="incoming-toast-title">{incomingToast.amount < 0 ? '送金しました' : '着金しました'}</div>
             <div className="incoming-toast-amount">
               {incomingToast.amount < 0 ? '' : '+'}{incomingToast.amount.toFixed(8)} {info.symbol}
+              {typeof incomingToast.feeSats === 'number' &&
+                `（手数料 ${(incomingToast.feeSats / 1e8).toFixed(8)} ${info.symbol}）`}
             </div>
           </div>
         </div>
