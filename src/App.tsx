@@ -853,7 +853,7 @@ function App() {
               </div>
             </div>
             <div className="status-msg info" style={{ marginTop: '12px' }}>
-              Warning: この秘密鍵はこのウォレットの全資産にアクセスできます。誰にも共有せず、画面を覗かれない場所で扱ってください。パネルは30秒で自動的に閉じます。
+              Warning: この秘密鍵はこのウォレットの全資産にアクセスできます。誰にも共有せず、画面を覗かれない場所で扱ってください。
             </div>
             <div className="form-buttons">
               <button className="cancel-btn" onClick={closeKeyPanel}>
