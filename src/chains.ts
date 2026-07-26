@@ -148,13 +148,24 @@ export async function fetchUTXOs(address: string, chain: ChainId): Promise<UTXO[
   if (!res.ok) return []
   const data = await res.json()
   if (!Array.isArray(data)) return []
-  return data.map((u: { tx_hash: string; tx_pos: number; value: number; height?: number | null; script?: string }) => ({
-    tx_hash: u.tx_hash,
-    tx_pos: u.tx_pos,
-    value: u.value,
-    height: typeof u.height === 'number' ? u.height : 0,
-    script: typeof u.script === 'string' ? u.script : undefined,
-  }))
+  return data
+    .map((u: { tx_hash: string; tx_pos: number; value: number; height?: number | null; script?: string }) => ({
+      tx_hash: u.tx_hash,
+      tx_pos: u.tx_pos,
+      value: u.value,
+      height: typeof u.height === 'number' ? u.height : 0,
+      script: typeof u.script === 'string' ? u.script : undefined,
+    }))
+    // Token outputs (STAS etc.) append extra constraint opcodes after the
+    // P2PKH prefix, so a plain P2PKH signature cannot spend them. Exclude any
+    // scripted UTXO that is not pure P2PKH from balance and coin selection.
+    // (WhatsOnChain omits `script`, so its UTXOs pass through unchanged.)
+    .filter(u => u.script === undefined || isPureP2pkh(u.script))
+}
+
+// Exactly OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG.
+function isPureP2pkh(scriptHex: string): boolean {
+  return /^76a914[0-9a-fA-F]{40}88ac$/.test(scriptHex)
 }
 
 export async function fetchBalanceFromUTXOs(address: string, chain: ChainId): Promise<{ total: number; confirmed: number; unconfirmed: number; utxos: UTXO[] }> {
