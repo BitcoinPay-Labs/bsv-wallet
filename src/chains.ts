@@ -1,4 +1,4 @@
-import { PrivateKey as BsvPrivateKey, P2PKH, Transaction as BsvTransaction, SatoshisPerKilobyte, LockingScript } from '@bsv/sdk'
+import { PrivateKey as BsvPrivateKey, P2PKH, Transaction as BsvTransaction, LockingScript } from '@bsv/sdk'
 import * as bitcoin from 'bitcoinjs-lib'
 import { ECPairFactory } from 'ecpair'
 import * as ecc from '@bitcoinerlab/secp256k1'
@@ -338,15 +338,27 @@ async function buildAndBroadcastBsv(opts: {
     return b.value - a.value
   })
 
+  // Deterministic fee at 1 sat/KB from the estimated raw size
+  // (~10 B header + ~148 B per P2PKH input + ~34 B per output), so a
+  // max-send only needs to leave the real fee (usually 1 sat), not an
+  // arbitrary safety margin.
+  const estimateFee = (nIn: number, nOut: number) =>
+    Math.max(1, Math.ceil((10 + 148 * nIn + 34 * nOut) / 1000))
+
   let totalInput = 0
   const used: UTXO[] = []
   for (const u of sortedUtxos) {
     used.push(u); totalInput += u.value
-    if (totalInput >= satoshisToSend + 500) break
+    if (totalInput >= satoshisToSend + estimateFee(used.length, 2)) break
   }
-  if (totalInput < satoshisToSend + 200) {
+  // Enough with a change output? If not, a change-less tx (all leftover
+  // becomes fee) may still fit — otherwise it's genuinely insufficient.
+  const feeWithChange = estimateFee(used.length, 2)
+  const feeNoChange = estimateFee(used.length, 1)
+  if (totalInput < satoshisToSend + feeNoChange) {
     throw new Error(`Insufficient balance. Available: ${totalInput} sat`)
   }
+  const change = totalInput - satoshisToSend - feeWithChange
 
   for (const u of used) {
     const sourceTransaction = await bsvSourceTransaction(u, chain)
@@ -362,12 +374,13 @@ async function buildAndBroadcastBsv(opts: {
     lockingScript: new P2PKH().lock(toAddress),
     satoshis: satoshisToSend,
   })
-  tx.addOutput({
-    lockingScript: new P2PKH().lock(fromAddress),
-    change: true,
-  })
+  if (change > 0) {
+    tx.addOutput({
+      lockingScript: new P2PKH().lock(fromAddress),
+      satoshis: change,
+    })
+  }
 
-  await tx.fee(new SatoshisPerKilobyte(1))
   await tx.sign()
   onTxidReady?.(tx.id('hex'))
   // Actual fee = inputs − outputs (the change output was sized by tx.fee()).
