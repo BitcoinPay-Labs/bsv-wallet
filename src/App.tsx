@@ -98,6 +98,11 @@ function App() {
 
   // Ref to track optimistic tx hashes that must survive API refreshes
   const pendingTxRef = useRef<Set<string>>(new Set())
+  // Outpoints ("txid:vout") spent by our own broadcasts. The indexer's
+  // /unspent lags the mempool by a few seconds, so these are filtered out of
+  // fetched UTXO sets (and pruned once the indexer stops listing them) to
+  // prevent double-spend rejections on consecutive sends.
+  const spentOutpointsRef = useRef<Set<string>>(new Set())
   // Whether the realtime push channel is currently connected (drives polling cadence)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -115,8 +120,17 @@ function App() {
         fetchBalanceFromUTXOs(addr, c),
         fetchTxHistory(addr, c),
       ])
-      setTotalSats(utxoData.total)
-      setUtxoList(utxoData.utxos)
+      // Prune locally-tracked spent outpoints the indexer has caught up on,
+      // then hide the still-lagging ones from balance/UTXO views.
+      const live = new Set(utxoData.utxos.map(u => `${u.tx_hash}:${u.tx_pos}`))
+      for (const op of spentOutpointsRef.current) {
+        if (!live.has(op)) spentOutpointsRef.current.delete(op)
+      }
+      const spendableUtxos = utxoData.utxos.filter(
+        u => !spentOutpointsRef.current.has(`${u.tx_hash}:${u.tx_pos}`)
+      )
+      setTotalSats(spendableUtxos.reduce((sum, u) => sum + u.value, 0))
+      setUtxoList(spendableUtxos)
       // Build history from UTXOs if the history endpoint returned nothing
       let apiHistory: TxHistoryItem[]
       if (hist.length === 0 && utxoData.utxos.length > 0) {
@@ -261,6 +275,7 @@ function App() {
   const handleLogout = useCallback(async () => {
     clearSession()
     pendingTxRef.current.clear()
+    spentOutpointsRef.current.clear()
     setPrivateKeyHex(null)
     setAddress('')
     setTotalSats(null)
@@ -289,7 +304,11 @@ function App() {
         throw new Error('Invalid amount')
       }
 
-      const utxos = await fetchUTXOs(address, chain)
+      // The indexer's /unspent can lag a few seconds behind the mempool, so
+      // filter out outpoints we already spent ourselves (locally tracked) to
+      // avoid building a double-spend.
+      const notLocallySpent = (u: UTXO) => !spentOutpointsRef.current.has(`${u.tx_hash}:${u.tx_pos}`)
+      const utxos = (await fetchUTXOs(address, chain)).filter(notLocallySpent)
       if (utxos.length === 0) {
         throw new Error('No UTXOs available')
       }
@@ -304,29 +323,34 @@ function App() {
       }
       let txid: string
       let feeSats: number
+      let spentOutpoints: string[]
       try {
-        ({ txid, feeSats } = await buildAndBroadcastTx({
+        ({ txid, feeSats, spentOutpoints } = await buildAndBroadcastTx({
           privateKeyHex, fromAddress: address, toAddress: sendTo,
           satoshisToSend, utxos, chain, addressFormat: fmt,
           onTxidReady: registerTxid,
         }))
       } catch (firstErr) {
-        // On mempool-conflict, retry with only unconfirmed UTXOs
+        // A conflict means our UTXO view was stale (an input was already spent
+        // in the mempool). Blacklist the outpoints named in the error, refetch,
+        // and retry once with the cleaned set.
         const errMsg = firstErr instanceof Error ? firstErr.message : ''
-        if (errMsg.includes('mempool-conflict') || errMsg.includes('Missing inputs')) {
-          const unconfirmedOnly = utxos.filter(u => u.height === 0)
-          if (unconfirmedOnly.length === 0) {
-            throw new Error('Transaction conflict - please wait for confirmations and try again')
-          }
-          ;({ txid, feeSats } = await buildAndBroadcastTx({
-            privateKeyHex, fromAddress: address, toAddress: sendTo,
-            satoshisToSend, utxos: unconfirmedOnly, chain, addressFormat: fmt,
-            onTxidReady: registerTxid,
-          }))
-        } else {
-          throw firstErr
+        const isConflict = /mempool-conflict|Missing inputs|UTXO_SPENT|already spent/i.test(errMsg)
+        if (!isConflict) throw firstErr
+        for (const m of errMsg.matchAll(/([0-9a-f]{64}):(\d+)/g)) {
+          spentOutpointsRef.current.add(`${m[1]}:${m[2]}`)
         }
+        const retryUtxos = (await fetchUTXOs(address, chain)).filter(notLocallySpent)
+        if (retryUtxos.length === 0) {
+          throw new Error('Transaction conflict - please wait a few seconds and try again')
+        }
+        ;({ txid, feeSats, spentOutpoints } = await buildAndBroadcastTx({
+          privateKeyHex, fromAddress: address, toAddress: sendTo,
+          satoshisToSend, utxos: retryUtxos, chain, addressFormat: fmt,
+          onTxidReady: registerTxid,
+        }))
       }
+      for (const op of spentOutpoints) spentOutpointsRef.current.add(op)
 
       setStatusMsg({ type: 'success', text: `Sent! TX:\n${txid}` })
       setShowSend(false)
@@ -507,6 +531,7 @@ function App() {
               setTotalSats(null)
               setUtxoList([]); setTxHistory([])
               pendingTxRef.current.clear()
+              spentOutpointsRef.current.clear()
               // Persist new chain selection (keep wif from current session)
               const wif = localStorage.getItem(STORAGE_KEY_WIF)
               if (wif) saveSession(wif, next, fmt)
@@ -534,6 +559,7 @@ function App() {
                 setTotalSats(null)
                 setUtxoList([]); setTxHistory([])
                 pendingTxRef.current.clear()
+                spentOutpointsRef.current.clear()
                 const wif = localStorage.getItem(STORAGE_KEY_WIF)
                 if (wif) saveSession(wif, chain, fmt)
                 loadWalletData(addr, chain)

@@ -299,7 +299,7 @@ export async function buildAndBroadcastTx(opts: {
   // register it for change-output suppression ahead of any realtime event
   // (the indexer's push can arrive before the broadcast HTTP response).
   onTxidReady?: (txid: string) => void
-}): Promise<{ txid: string; feeSats: number }> {
+}): Promise<{ txid: string; feeSats: number; spentOutpoints: string[] }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
 
   if (CHAINS[chain].isBtc) {
@@ -316,7 +316,7 @@ async function buildAndBroadcastBsv(opts: {
   utxos: UTXO[]
   chain: ChainId
   onTxidReady?: (txid: string) => void
-}): Promise<{ txid: string; feeSats: number }> {
+}): Promise<{ txid: string; feeSats: number; spentOutpoints: string[] }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, onTxidReady } = opts
   const pk = new BsvPrivateKey(privateKeyHex, 16)
   const tx = new BsvTransaction()
@@ -363,7 +363,7 @@ async function buildAndBroadcastBsv(opts: {
   const outputTotal = tx.outputs.reduce((sum, o) => sum + (o.satoshis ?? 0), 0)
   const feeSats = totalInput - outputTotal
   const txid = await broadcastTx(tx.toHex(), chain)
-  return { txid, feeSats }
+  return { txid, feeSats, spentOutpoints: used.map(u => `${u.tx_hash}:${u.tx_pos}`) }
 }
 
 async function buildAndBroadcastBtc(opts: {
@@ -375,7 +375,7 @@ async function buildAndBroadcastBtc(opts: {
   chain: ChainId
   addressFormat: AddressFormat
   onTxidReady?: (txid: string) => void
-}): Promise<{ txid: string; feeSats: number }> {
+}): Promise<{ txid: string; feeSats: number; spentOutpoints: string[] }> {
   const { privateKeyHex, fromAddress, toAddress, satoshisToSend, utxos, chain, addressFormat, onTxidReady } = opts
   const network = btcNetwork(chain)
   const keyPair = ECPair.fromPrivateKey(Buffer.from(privateKeyHex, 'hex'), { network, compressed: true })
@@ -462,5 +462,5 @@ async function buildAndBroadcastBtc(opts: {
   const outputTotal = finalTx.outs.reduce((sum, o) => sum + Number(o.value), 0)
   const feeSats = totalInput - outputTotal
   const txid = await broadcastTx(finalTx.toHex(), chain)
-  return { txid, feeSats }
+  return { txid, feeSats, spentOutpoints: used.map(u => `${u.tx_hash}:${u.tx_pos}`) }
 }
